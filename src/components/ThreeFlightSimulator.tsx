@@ -1,29 +1,176 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
 import * as THREE from 'three';
 import { TelemetryData } from '../types';
 import { soundFx } from '../audio/soundEngine';
+import { LaunchCommandNavPanel, LaunchCommand } from './LaunchCommandNavPanel';
 import { 
   Play, 
   Pause, 
   RotateCcw, 
-  Eye, 
   Sparkles, 
   Crosshair, 
-  ShieldCheck, 
   AlertTriangle,
-  Flame,
   Target,
   Waves,
-  Zap,
-  Activity,
-  Compass,
-  CheckCircle2
+  CheckCircle2,
+  Maximize2,
+  Minimize2,
+  ZoomIn,
+  ZoomOut
 } from 'lucide-react';
 
 interface ThreeFlightSimulatorProps {
   telemetry: TelemetryData;
   setTelemetry: React.Dispatch<React.SetStateAction<TelemetryData>>;
   onOpenStarTracker: () => void;
+}
+
+// Telemetry calculation helper for any point in mission time
+function calculateTelemetryAtTime(t: number, isGss: boolean, prevLogs: string[] = []): Partial<TelemetryData> {
+  let stage: TelemetryData['stage'] = 'PRE_LAUNCH_4KT';
+  let alt = -0.045;
+  let vel = 2.06;
+  let downrange = 0;
+  let fuel = 100;
+  let pitch = 90;
+  let dynPress = 0;
+  let bubbleInt = 100;
+  let drift = isGss ? 15 : 120;
+  let starStatus: 'STANDBY' | 'ACQUIRING' | 'LOCKED' | 'CORRECTED' = 'STANDBY';
+
+  const currentDeflection = isGss ? 0.08 : 24.5;
+  const missMeters = isGss ? 38 : 1420;
+  const overpressure = isGss ? 2850 : 38;
+  const killProb = isGss ? 99.4 : 18.2;
+
+  if (t < 3.0) {
+    stage = 'PRE_LAUNCH_4KT';
+    alt = -0.045;
+    vel = 2.06;
+    downrange = 0;
+    fuel = 100;
+    pitch = 90;
+    dynPress = 0;
+    bubbleInt = 100;
+  } else if (t >= 3.0 && t < 5.8) {
+    stage = 'SUB_BUBBLE_EJECT';
+    const tRel = t - 3.0;
+    alt = -0.045 + tRel * 0.016;
+    vel = 24.5;
+    bubbleInt = 100;
+    downrange = tRel * 0.02;
+    pitch = 90;
+  } else if (t >= 5.8 && t < 6.8) {
+    stage = 'BUBBLE_BURST';
+    alt = 0.005 + (t - 5.8) * 0.025;
+    vel = 22;
+    bubbleInt = Math.max(0, 100 - (t - 5.8) * 120);
+    downrange = 0.06;
+    pitch = 89;
+  } else if (t >= 6.8 && t < 12.0) {
+    stage = 'AEROSPIKE';
+    const tRel = t - 6.8;
+    alt = 0.03 + tRel * 0.42;
+    vel = 95 + tRel * 140;
+    fuel = 98 - tRel * 2.5;
+    pitch = 88;
+    dynPress = tRel * 9.2;
+    bubbleInt = 0;
+    drift += tRel * (isGss ? 2 : 12);
+  } else if (t >= 12.0 && t < 28.0) {
+    stage = 'STAGE_1';
+    const tRel = t - 12.0;
+    alt = 2.2 + tRel * 1.8;
+    vel = 820 + tRel * 95;
+    downrange = tRel * 1.4;
+    fuel = 85 - tRel * 2.8;
+    pitch = 88 - tRel * 1.5;
+    dynPress = Math.max(0, 48 - Math.pow(tRel - 6, 2) * 0.4);
+    drift += tRel * (isGss ? 3 : 18);
+  } else if (t >= 28.0 && t < 45.0) {
+    stage = 'STAGE_2';
+    const tRel = t - 28.0;
+    alt = 31 + tRel * 3.8;
+    vel = 2340 + tRel * 165;
+    downrange = 22.4 + tRel * 7.5;
+    fuel = 40 - tRel * 1.6;
+    pitch = 64 - tRel * 1.2;
+    dynPress = Math.max(0, 12 - tRel * 0.8);
+    drift += tRel * (isGss ? 4 : 26);
+  } else if (t >= 45.0 && t < 60.0) {
+    stage = 'STAGE_3';
+    const tRel = t - 45.0;
+    alt = 95 + tRel * 4.2;
+    vel = 5145 + tRel * 130;
+    downrange = 150 + tRel * 24.5;
+    fuel = 13 - tRel * 0.6;
+    pitch = 44 - tRel * 1.0;
+    dynPress = 0;
+    starStatus = t >= 52 ? 'LOCKED' : 'ACQUIRING';
+  } else if (t >= 60.0 && t < 72.0) {
+    stage = 'REACH_ATTITUDE';
+    const tRel = t - 60.0;
+    alt = 158 + tRel * 2.8;
+    vel = 7120 + tRel * 8;
+    downrange = 518 + tRel * 40;
+    fuel = Math.max(0, 6 - tRel * 0.2);
+    pitch = 28;
+    starStatus = 'CORRECTED';
+    drift = isGss ? 18 : 650;
+  } else if (t >= 72.0 && t < 82.0) {
+    stage = 'PLATFORM_DEPLOY';
+    const tRel = t - 72.0;
+    alt = 191 + tRel * 2.4;
+    vel = 7200;
+    downrange = 998 + tRel * 45;
+    fuel = 4;
+    pitch = 25;
+    starStatus = 'CORRECTED';
+  } else if (t >= 82.0 && t < 96.0) {
+    stage = 'WARHEAD_RELEASE';
+    const tRel = t - 82.0;
+    alt = 215 + tRel * 1.8;
+    vel = 7250;
+    downrange = 1448 + tRel * 52;
+    fuel = 2;
+    pitch = 15;
+    starStatus = 'CORRECTED';
+  } else if (t >= 96.0 && t < 110.0) {
+    stage = 'REENTRY_STREAK';
+    const tRel = t - 96.0;
+    alt = Math.max(0.5, 240 - tRel * 17);
+    vel = 7400 - tRel * 90;
+    downrange = 2176 + tRel * 68;
+    fuel = 0;
+    pitch = -45 - tRel * 2.2;
+    starStatus = 'CORRECTED';
+  } else {
+    stage = 'TARGET_IMPACT';
+    alt = 0;
+    vel = 0;
+    downrange = 3128;
+    fuel = 0;
+    pitch = -90;
+    starStatus = 'CORRECTED';
+  }
+
+  return {
+    missionTime: t,
+    altitude: alt,
+    velocity: vel,
+    downrange: downrange,
+    stage: stage,
+    fuelPercent: fuel,
+    pitchAngle: pitch,
+    dynamicPressure: dynPress,
+    inertialDrift: drift,
+    starLockStatus: starStatus,
+    bubbleIntegrity: bubbleInt,
+    sinsDeflectionArcsec: currentDeflection,
+    targetMissMeters: missMeters,
+    siloOverpressurePsi: overpressure,
+    targetKillProb: killProb
+  };
 }
 
 export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
@@ -36,9 +183,25 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
   const [cameraMode, setCameraMode] = useState<'FOLLOW' | 'SUB_4KT' | 'BUBBLE_CAM' | 'PLATFORM_BUS' | 'TARGET_SILO' | 'SHIP'>('FOLLOW');
   const [simulationSpeed, setSimulationSpeed] = useState<number>(1);
   const [shockConeVisible, setShockConeVisible] = useState<boolean>(true);
-  const [targetViewGssComparison, setTargetViewGssComparison] = useState<boolean>(false);
+  const [isTheaterMode, setIsTheaterMode] = useState<boolean>(false);
+  const [autoCamSync, setAutoCamSync] = useState<boolean>(true);
+  const [zoomDisplay, setZoomDisplay] = useState<number>(100);
 
-  // Keep references for Three.js animation loop
+  // Time reference driving the animation independent of React state batches
+  const simTimeRef = useRef<number>(telemetry.missionTime);
+  const lastStateUpdateRef = useRef<number>(0);
+
+  // User interactive camera orbit and zoom state
+  const userOrbitRef = useRef({
+    rotX: 0,
+    rotY: 0,
+    distanceFactor: 1.0,
+    isDragging: false,
+    startX: 0,
+    startY: 0
+  });
+
+  // Three.js References
   const animFrameId = useRef<number | null>(null);
   const sceneRef = useRef<THREE.Scene | null>(null);
   const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
@@ -46,13 +209,14 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
 
   // 3D Objects
   const subGroupRef = useRef<THREE.Group | null>(null);
-  const subWakeRef = useRef<THREE.Points | null>(null);
   const missileGroupRef = useRef<THREE.Group | null>(null);
   const steamBubbleMeshRef = useRef<THREE.Mesh | null>(null);
   const bubbleParticlesRef = useRef<THREE.Points | null>(null);
   const bubbleBurstMeshRef = useRef<THREE.Mesh | null>(null);
   const aerospikeMeshRef = useRef<THREE.Mesh | null>(null);
-  const flameMeshRef = useRef<THREE.Mesh | null>(null);
+  const flameInnerMeshRef = useRef<THREE.Mesh | null>(null);
+  const flameOuterMeshRef = useRef<THREE.Mesh | null>(null);
+  const flameLightRef = useRef<THREE.PointLight | null>(null);
   const shockConeMeshRef = useRef<THREE.Mesh | null>(null);
   const stage1MeshRef = useRef<THREE.Mesh | null>(null);
   const stage2MeshRef = useRef<THREE.Mesh | null>(null);
@@ -65,155 +229,490 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
   const targetComplexRef = useRef<THREE.Group | null>(null);
   const detonationFlashRef = useRef<THREE.Mesh | null>(null);
   const thrusterPlumesRef = useRef<THREE.Mesh[]>([]);
+  const sunLightRef = useRef<THREE.DirectionalLight | null>(null);
+
+  // Synchronize simTimeRef when telemetry.missionTime changes externally
+  useEffect(() => {
+    simTimeRef.current = telemetry.missionTime;
+  }, [telemetry.missionTime]);
+
+  // Dedicated scene update & render function callable anytime (playing or paused)
+  const updateSimulationVisuals = useCallback((t: number) => {
+    if (!sceneRef.current || !cameraRef.current || !rendererRef.current) return;
+
+    const data = calculateTelemetryAtTime(t, telemetry.gssEnabled);
+    const stage = data.stage || 'PRE_LAUNCH_4KT';
+    const alt = data.altitude ?? 0;
+    const downrange = data.downrange ?? 0;
+    const pitch = data.pitchAngle ?? 90;
+    const bubbleInt = data.bubbleIntegrity ?? 100;
+    const isGss = telemetry.gssEnabled;
+
+    // 1. Submarine Position (Cruising at 4.0 knots patrol speed)
+    if (subGroupRef.current) {
+      // Submarine stays centered right beneath the launch origin, gliding slowly forward along X
+      const subX = (t * 0.4);
+      subGroupRef.current.position.set(subX, -22, 0);
+    }
+
+    // 2. Trident Missile Position & Gravity-Turn Attitude
+    if (missileGroupRef.current) {
+      // Direct center trajectory: emerges straight up at x=0, z=0 and arches downrange along -Z
+      let visualY: number;
+      let visualZ: number;
+
+      if (t < 5.8) {
+        // Underwater ejection: from Tube #4 (-14m) to surface (0m)
+        const tRel = Math.max(0, t - 3.0);
+        visualY = -14 + (tRel / 2.8) * 14;
+        visualZ = 0;
+      } else if (stage === 'TARGET_IMPACT') {
+        visualY = 0.5;
+        visualZ = -1200;
+      } else {
+        // Boost & Exoatmospheric Trajectory
+        visualY = Math.max(0, alt * 0.45);
+        visualZ = -(downrange * 0.35);
+      }
+
+      missileGroupRef.current.position.set(0, visualY, visualZ);
+
+      // Attitude Rotation (pitch angle: 90 = vertical up, 0 = horizontal downrange, -90 = straight down)
+      const rad = (pitch * Math.PI) / 180;
+      missileGroupRef.current.rotation.x = -(Math.PI / 2 - rad);
+
+      // Dynamic Sun & Engine Light tracking
+      if (sunLightRef.current) {
+        sunLightRef.current.position.set(20, visualY + 40, visualZ + 35);
+        sunLightRef.current.target.position.set(0, visualY, visualZ);
+        sunLightRef.current.target.updateMatrixWorld();
+      }
+
+      // Steam Cavity Bubble Envelope Visibility
+      if (steamBubbleMeshRef.current) {
+        const isSubmerged = stage === 'PRE_LAUNCH_4KT' || stage === 'SUB_BUBBLE_EJECT' || stage === 'BUBBLE_BURST';
+        steamBubbleMeshRef.current.visible = isSubmerged && bubbleInt > 5;
+        if (isSubmerged) {
+          const pulse = 1.0 + Math.sin(t * 16) * 0.08;
+          steamBubbleMeshRef.current.scale.set(pulse, 1.0, pulse);
+        }
+      }
+
+      // Rising Cavitation Bubble Particles inside water column
+      if (bubbleParticlesRef.current) {
+        bubbleParticlesRef.current.visible = stage === 'SUB_BUBBLE_EJECT';
+        if (stage === 'SUB_BUBBLE_EJECT') {
+          bubbleParticlesRef.current.rotation.y += 0.06;
+        }
+      }
+
+      // Ocean Surface Cavitation Burst Ring
+      if (bubbleBurstMeshRef.current) {
+        if (stage === 'BUBBLE_BURST') {
+          const bScale = Math.max(1, (t - 5.8) * 22);
+          bubbleBurstMeshRef.current.scale.set(bScale, bScale, 1);
+          (bubbleBurstMeshRef.current.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.9 - (t - 5.8) * 0.9);
+        } else {
+          (bubbleBurstMeshRef.current.material as THREE.MeshBasicMaterial).opacity = 0;
+        }
+      }
+
+      // Rocket Motor Exhaust Plumes & Lighting
+      const isMotorFired = stage === 'AEROSPIKE' || stage === 'STAGE_1' || stage === 'STAGE_2' || stage === 'STAGE_3';
+      
+      if (flameInnerMeshRef.current && flameOuterMeshRef.current && flameLightRef.current) {
+        flameInnerMeshRef.current.visible = isMotorFired;
+        flameOuterMeshRef.current.visible = isMotorFired;
+        flameLightRef.current.visible = isMotorFired;
+
+        if (isMotorFired) {
+          const flicker = 0.9 + Math.random() * 0.25;
+          flameInnerMeshRef.current.scale.set(flicker, flicker * 1.2, flicker);
+          flameOuterMeshRef.current.scale.set(flicker * 1.1, flicker * 1.3, flicker * 1.1);
+
+          // Adjust plume base position to active stage
+          let nozzleY = -6.0;
+          if (stage === 'STAGE_3') nozzleY = 10.0;
+          else if (stage === 'STAGE_2') nozzleY = 3.5;
+          
+          flameInnerMeshRef.current.position.y = nozzleY;
+          flameOuterMeshRef.current.position.y = nozzleY - 2.0;
+          flameLightRef.current.position.y = nozzleY - 4.0;
+          flameLightRef.current.intensity = 5.0 + Math.random() * 2.0;
+        }
+      }
+
+      // Telescoping Aerospike Extension
+      if (aerospikeMeshRef.current) {
+        const hasSpike = stage !== 'PRE_LAUNCH_4KT' && stage !== 'SUB_BUBBLE_EJECT' && stage !== 'BUBBLE_BURST';
+        aerospikeMeshRef.current.visible = hasSpike && stage !== 'PLATFORM_DEPLOY' && stage !== 'WARHEAD_RELEASE' && stage !== 'REENTRY_STREAK' && stage !== 'TARGET_IMPACT';
+      }
+
+      // Supersonic Bow Shock Cone
+      if (shockConeMeshRef.current) {
+        shockConeMeshRef.current.visible = shockConeVisible && (stage === 'AEROSPIKE' || stage === 'STAGE_1');
+      }
+
+      // Stage Separations (Stage 1, Stage 2, Stage 3 dropping behind)
+      if (stage1MeshRef.current) {
+        if (t >= 28.0) {
+          const tSep1 = t - 28.0;
+          stage1MeshRef.current.position.y = 4.75 - Math.pow(tSep1, 1.4) * 4;
+          stage1MeshRef.current.visible = tSep1 < 8;
+        } else {
+          stage1MeshRef.current.position.y = 4.75;
+          stage1MeshRef.current.visible = true;
+        }
+      }
+
+      if (stage2MeshRef.current) {
+        if (t >= 45.0) {
+          const tSep2 = t - 45.0;
+          stage2MeshRef.current.position.y = 12.5 - Math.pow(tSep2, 1.4) * 4;
+          stage2MeshRef.current.visible = tSep2 < 8;
+        } else {
+          stage2MeshRef.current.position.y = 12.5;
+          stage2MeshRef.current.visible = true;
+        }
+      }
+
+      if (stage3MeshRef.current) {
+        if (t >= 60.0) {
+          const tSep3 = t - 60.0;
+          stage3MeshRef.current.position.y = 18.0 - Math.pow(tSep3, 1.4) * 4;
+          stage3MeshRef.current.visible = tSep3 < 8;
+        } else {
+          stage3MeshRef.current.position.y = 18.0;
+          stage3MeshRef.current.visible = true;
+        }
+      }
+
+      // Nose Shroud Fairings (splitting apart at PLATFORM_DEPLOY)
+      if (noseFairingLeftRef.current && noseFairingRightRef.current) {
+        if (stage === 'PLATFORM_DEPLOY' || stage === 'WARHEAD_RELEASE' || stage === 'REENTRY_STREAK' || stage === 'TARGET_IMPACT') {
+          const deployT = Math.min(8, t - 72.0);
+          noseFairingLeftRef.current.position.x = -deployT * 2.2;
+          noseFairingLeftRef.current.position.z = -deployT * 1.8;
+          noseFairingLeftRef.current.rotation.z = deployT * 0.45;
+          noseFairingRightRef.current.position.x = deployT * 2.2;
+          noseFairingRightRef.current.position.z = deployT * 1.8;
+          noseFairingRightRef.current.rotation.z = -deployT * 0.45;
+        } else {
+          noseFairingLeftRef.current.position.set(0, 2.5, 0);
+          noseFairingRightRef.current.position.set(0, 2.5, 0);
+          noseFairingLeftRef.current.rotation.set(0, 0, 0);
+          noseFairingRightRef.current.rotation.set(0, Math.PI, 0);
+        }
+      }
+
+      // Post-Boost Vehicle Vernier Thrusters
+      thrusterPlumesRef.current.forEach((plume) => {
+        const isFiring = stage === 'REACH_ATTITUDE' || stage === 'PLATFORM_DEPLOY';
+        (plume.material as THREE.MeshBasicMaterial).opacity = isFiring ? (0.5 + Math.random() * 0.5) : 0;
+      });
+
+      // 4 Mk 4/5 Reentry Vehicles Separation
+      warheadsRef.current.forEach((wh, idx) => {
+        if (stage === 'WARHEAD_RELEASE' || stage === 'REENTRY_STREAK' || stage === 'TARGET_IMPACT') {
+          const tSep = Math.min(30, t - 82.0);
+          const offsetBias = isGss ? (idx - 1.5) * 1.2 : ((idx - 1.5) * 6.0 + 35.0);
+          wh.position.x = Math.cos(idx * Math.PI / 2) * (1.2 + tSep * 0.45) + (offsetBias * 0.02);
+          wh.position.z = (idx - 1.5) * (tSep * 0.55);
+          wh.position.y = 3.5 - tSep * 0.2;
+        } else {
+          const ang = idx * Math.PI / 2;
+          wh.position.set(Math.cos(ang) * 1.1, 3.5, Math.sin(ang) * 1.1);
+        }
+      });
+    }
+
+    // Reentry Plasma Trails behind warheads
+    plasmaTrailsRef.current.forEach((line, idx) => {
+      if (stage === 'REENTRY_STREAK' && missileGroupRef.current) {
+        const mPos = missileGroupRef.current.position;
+        const wh = warheadsRef.current[idx];
+        const pArr = (line.geometry.attributes.position as THREE.BufferAttribute).array as Float32Array;
+        pArr[0] = mPos.x + wh.position.x;
+        pArr[1] = mPos.y + wh.position.y;
+        pArr[2] = mPos.z + wh.position.z;
+        pArr[3] = mPos.x + wh.position.x;
+        pArr[4] = mPos.y + wh.position.y + 45;
+        pArr[5] = mPos.z + wh.position.z + 25;
+        line.geometry.attributes.position.needsUpdate = true;
+        (line.material as THREE.LineBasicMaterial).opacity = 0.9;
+      } else {
+        (line.material as THREE.LineBasicMaterial).opacity = 0;
+      }
+    });
+
+    // Detonation Nuclear Flash at Target Silo
+    if (detonationFlashRef.current) {
+      if (stage === 'TARGET_IMPACT') {
+        const tFlash = t - 110.0;
+        const flashScale = Math.min(5.0, 1.0 + tFlash * 4.0);
+        detonationFlashRef.current.scale.set(flashScale, flashScale, flashScale);
+        const targetX = isGss ? 0 : 65;
+        detonationFlashRef.current.position.set(targetX, 10, -1200);
+        (detonationFlashRef.current.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.95 - tFlash * 0.2);
+      } else {
+        (detonationFlashRef.current.material as THREE.MeshBasicMaterial).opacity = 0;
+      }
+    }
+
+    // Camera Framing: Centered prominently on the Trident II missile
+    if (cameraRef.current && missileGroupRef.current) {
+      const mPos = missileGroupRef.current.position;
+      const distScale = userOrbitRef.current.distanceFactor;
+      const { rotX, rotY } = userOrbitRef.current;
+
+      const targetLookAt = new THREE.Vector3(mPos.x, mPos.y + 10, mPos.z);
+      const targetCamPos = new THREE.Vector3();
+
+      if (cameraMode === 'SUB_4KT') {
+        // Close perspective tracking Ohio-class sub at 4 knots
+        if (subGroupRef.current) {
+          const sPos = subGroupRef.current.position;
+          targetLookAt.set(sPos.x, sPos.y + 5, sPos.z);
+          targetCamPos.set(
+            sPos.x + 26 * distScale,
+            sPos.y + 8 * distScale,
+            sPos.z + 28 * distScale
+          );
+        }
+      } else if (cameraMode === 'BUBBLE_CAM') {
+        // Close-up examining supercavitating steam bubble around the missile
+        targetLookAt.set(mPos.x, mPos.y + 8, mPos.z);
+        targetCamPos.set(
+          mPos.x + 14 * distScale,
+          mPos.y + 8 * distScale,
+          mPos.z + 18 * distScale
+        );
+      } else if (cameraMode === 'PLATFORM_BUS') {
+        // High-resolution view of PBV platform & warhead deployment
+        targetLookAt.set(mPos.x, mPos.y + 20, mPos.z);
+        targetCamPos.set(
+          mPos.x + 10 * distScale,
+          mPos.y + 21 * distScale,
+          mPos.z + 13 * distScale
+        );
+      } else if (cameraMode === 'TARGET_SILO') {
+        // Tactical view at reinforced ICBM silo
+        targetLookAt.set(0, 0, -1200);
+        targetCamPos.set(
+          35 * distScale,
+          32 * distScale,
+          -1140 + (1 - distScale) * 35
+        );
+      } else if (cameraMode === 'SHIP') {
+        // USNS Vanguard downrange perspective
+        targetLookAt.set(mPos.x, mPos.y + 10, mPos.z);
+        targetCamPos.set(240 * distScale, 20 * distScale, -380 * distScale);
+      } else {
+        // Default FOLLOW camera: missile is centered, majestic, and prominently fills the frame
+        targetLookAt.set(mPos.x, mPos.y + 10, mPos.z);
+        targetCamPos.set(
+          mPos.x + 20 * distScale,
+          mPos.y + 10 * distScale,
+          mPos.z + 28 * distScale
+        );
+      }
+
+      // Apply interactive orbit angles around targetLookAt
+      if (rotX !== 0 || rotY !== 0) {
+        const relX = targetCamPos.x - targetLookAt.x;
+        const relY = targetCamPos.y - targetLookAt.y;
+        const relZ = targetCamPos.z - targetLookAt.z;
+
+        const cosY = Math.cos(rotY);
+        const sinY = Math.sin(rotY);
+        const cosX = Math.cos(rotX);
+        const sinX = Math.sin(rotX);
+
+        const rx = relX * cosY - relZ * sinY;
+        const rz = relX * sinY + relZ * cosY;
+        const ry = relY * cosX - rz * sinX;
+        const rz2 = relY * sinX + rz * cosX;
+
+        cameraRef.current.position.set(
+          targetLookAt.x + rx,
+          targetLookAt.y + ry,
+          targetLookAt.z + rz2
+        );
+      } else {
+        cameraRef.current.position.copy(targetCamPos);
+      }
+
+      cameraRef.current.lookAt(targetLookAt);
+    }
+
+    rendererRef.current.render(sceneRef.current, cameraRef.current);
+  }, [cameraMode, shockConeVisible, telemetry.gssEnabled]);
 
   // Initialize Three.js Scene
   useEffect(() => {
     if (!containerRef.current) return;
-    const width = containerRef.current.clientWidth;
-    const height = containerRef.current.clientHeight;
+    const width = containerRef.current.clientWidth || 800;
+    const height = containerRef.current.clientHeight || 600;
 
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color(0x050811);
-    scene.fog = new THREE.FogExp2(0x050811, 0.0006);
+    scene.background = new THREE.Color(0x060c18);
+    scene.fog = new THREE.FogExp2(0x060c18, 0.00035);
     sceneRef.current = scene;
 
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 10000);
-    camera.position.set(0, 15, 50);
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 12000);
+    camera.position.set(22, 10, 30);
+    camera.lookAt(0, 10, 0);
     cameraRef.current = camera;
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: 'high-performance' });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    containerRef.current.appendChild(renderer.domElement);
+    renderer.toneMappingExposure = 1.15;
+    containerRef.current.replaceChildren(renderer.domElement);
     rendererRef.current = renderer;
 
-    // Lighting
-    const ambientLight = new THREE.AmbientLight(0x334155, 1.3);
+    // --- LIGHTING SETUP (High contrast & full illumination) ---
+    const ambientLight = new THREE.AmbientLight(0x64748b, 1.8);
     scene.add(ambientLight);
 
-    const sunLight = new THREE.DirectionalLight(0xfffbeb, 2.8);
-    sunLight.position.set(150, 250, 180);
+    const sunLight = new THREE.DirectionalLight(0xffffff, 3.2);
+    sunLight.position.set(20, 50, 40);
     scene.add(sunLight);
+    sunLightRef.current = sunLight;
 
-    const waterLight = new THREE.DirectionalLight(0x0284c7, 1.2);
-    waterLight.position.set(0, -60, 50);
-    scene.add(waterLight);
+    // Blue earthshine fill light from below
+    const earthshineLight = new THREE.DirectionalLight(0x38bdf8, 1.6);
+    earthshineLight.position.set(-30, -20, -20);
+    scene.add(earthshineLight);
 
-    // Deep Ocean Water Surface Plane
-    const oceanGeo = new THREE.PlaneGeometry(4000, 4000, 32, 32);
-    const oceanMat = new THREE.MeshStandardMaterial({
-      color: 0x0c283f,
-      roughness: 0.15,
-      metalness: 0.85,
+    // Dynamic Rocket Motor Fire PointLight
+    const flamePointLight = new THREE.PointLight(0xff8822, 6.0, 120);
+    flamePointLight.visible = false;
+    scene.add(flamePointLight);
+    flameLightRef.current = flamePointLight;
+
+    // --- 360-DEGREE SPHERICAL STARFIELD ---
+    const starCount = 3800;
+    const starGeo = new THREE.BufferGeometry();
+    const starPositions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(Math.random() * 2 - 1);
+      const r = 2400 + Math.random() * 1600;
+      starPositions[i * 3] = r * Math.sin(phi) * Math.cos(theta);
+      starPositions[i * 3 + 1] = r * Math.sin(phi) * Math.sin(theta);
+      starPositions[i * 3 + 2] = r * Math.cos(phi);
+    }
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
+    const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 2.4, sizeAttenuation: true });
+    scene.add(new THREE.Points(starGeo, starMat));
+
+    // --- EARTH ATMOSPHERE CURVED RIM HORIZON ---
+    const horizonGeo = new THREE.RingGeometry(800, 1800, 64);
+    const horizonMat = new THREE.MeshBasicMaterial({
+      color: 0x0284c7,
+      side: THREE.DoubleSide,
       transparent: true,
-      opacity: 0.88
+      opacity: 0.28
+    });
+    const horizonMesh = new THREE.Mesh(horizonGeo, horizonMat);
+    horizonMesh.rotation.x = -Math.PI / 2;
+    horizonMesh.position.y = -60;
+    scene.add(horizonMesh);
+
+    // --- DEEP OCEAN WATER SURFACE PLANE ---
+    const oceanGeo = new THREE.PlaneGeometry(5000, 5000, 48, 48);
+    const oceanMat = new THREE.MeshStandardMaterial({
+      color: 0x0f2942,
+      roughness: 0.12,
+      metalness: 0.88,
+      transparent: true,
+      opacity: 0.92
     });
     const oceanMesh = new THREE.Mesh(oceanGeo, oceanMat);
     oceanMesh.rotation.x = -Math.PI / 2;
     oceanMesh.position.y = 0;
     scene.add(oceanMesh);
 
-    // Ocean grid overlay
-    const gridHelper = new THREE.GridHelper(3000, 60, 0x1e293b, 0x0f172a);
+    // Ocean grid tactical overlay
+    const gridHelper = new THREE.GridHelper(3500, 70, 0x0284c7, 0x1e293b);
     gridHelper.position.y = 0.1;
     scene.add(gridHelper);
 
-    // Submarine Undersea Floor (Bathymetry Seamount)
-    const seaFloorGeo = new THREE.PlaneGeometry(2000, 2000, 24, 24);
-    const seaFloorMat = new THREE.MeshStandardMaterial({ color: 0x08111e, roughness: 0.9 });
+    // Undersea Floor / Seamount
+    const seaFloorGeo = new THREE.PlaneGeometry(2500, 2500, 24, 24);
+    const seaFloorMat = new THREE.MeshStandardMaterial({ color: 0x030811, roughness: 0.95 });
     const seaFloor = new THREE.Mesh(seaFloorGeo, seaFloorMat);
     seaFloor.rotation.x = -Math.PI / 2;
-    seaFloor.position.y = -80;
+    seaFloor.position.y = -90;
     scene.add(seaFloor);
 
     // ==========================================
-    // 1. OHIO-CLASS SUBMARINE (4-KNOT PATROL SPEED)
+    // 1. OHIO-CLASS SUBMARINE (CENTERED BENEATH LAUNCH POINT)
     // ==========================================
     const subGroup = new THREE.Group();
-    subGroup.position.set(-60, -18, 0); // submerged ~45 meters
+    subGroup.position.set(0, -22, 0);
     subGroupRef.current = subGroup;
 
-    // Hull (170m Ohio class cylinder)
-    const hullGeo = new THREE.CylinderGeometry(7.5, 7.5, 120, 32);
+    // Submarine Hull (Black anechoic tiles)
+    const hullGeo = new THREE.CylinderGeometry(8.5, 8.5, 140, 32);
     const hullMat = new THREE.MeshStandardMaterial({
-      color: 0x18202b,
-      metalness: 0.7,
-      roughness: 0.35
+      color: 0x111827,
+      metalness: 0.8,
+      roughness: 0.3
     });
     const hull = new THREE.Mesh(hullGeo, hullMat);
     hull.rotation.z = Math.PI / 2;
     subGroup.add(hull);
 
-    // Conning Tower / Sail
-    const sailGeo = new THREE.BoxGeometry(16, 12, 5.5);
-    const sailMat = new THREE.MeshStandardMaterial({ color: 0x1e293b, metalness: 0.7, roughness: 0.3 });
+    // Conning Tower Sail
+    const sailGeo = new THREE.BoxGeometry(18, 14, 6.0);
+    const sailMat = new THREE.MeshStandardMaterial({ color: 0x1f2937, metalness: 0.7, roughness: 0.3 });
     const sail = new THREE.Mesh(sailGeo, sailMat);
-    sail.position.set(18, 9, 0);
+    sail.position.set(22, 10, 0);
     subGroup.add(sail);
 
-    // Submarine Stern Propulsor / Screw
-    const screwGeo = new THREE.CylinderGeometry(4.5, 4.5, 3.5, 16);
+    // Stern Screw Propulsor
+    const screwGeo = new THREE.CylinderGeometry(5.0, 5.0, 4.0, 16);
     const screwMat = new THREE.MeshStandardMaterial({ color: 0xb45309, metalness: 0.9, roughness: 0.2 });
     const screw = new THREE.Mesh(screwGeo, screwMat);
     screw.rotation.z = Math.PI / 2;
-    screw.position.set(-61, 0, 0);
+    screw.position.set(-72, 0, 0);
     subGroup.add(screw);
 
-    // 24 Missile Tube Hatches on Turtleback deck
-    const hatchMat = new THREE.MeshStandardMaterial({ color: 0x334155, metalness: 0.5 });
-    const openHatchMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.8 });
+    // 24 Missile Tube Hatches (Tube #4 is active and highlighted)
+    const hatchMat = new THREE.MeshStandardMaterial({ color: 0x374151, metalness: 0.6 });
+    const openHatchMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.9, roughness: 0.1 });
     for (let i = 0; i < 12; i++) {
-      [-2.4, 2.4].forEach((zOff) => {
-        const xPos = -32 + i * 5.5;
+      [-2.8, 2.8].forEach((zOff) => {
+        const xPos = -35 + i * 6.2;
         const isTube4 = i === 3 && zOff > 0;
-        const hatchGeo = new THREE.CylinderGeometry(1.8, 1.8, 0.4, 16);
+        const hatchGeo = new THREE.CylinderGeometry(2.2, 2.2, 0.5, 20);
         const hatch = new THREE.Mesh(hatchGeo, isTube4 ? openHatchMat : hatchMat);
-        hatch.position.set(xPos, 7.6, zOff);
+        hatch.position.set(xPos, 8.7, zOff);
         subGroup.add(hatch);
       });
     }
-
-    // Submarine 4-Knot Wake Particles (Trailing bubbles)
-    const wakeParticleCount = 180;
-    const wakeGeo = new THREE.BufferGeometry();
-    const wakePos = new Float32Array(wakeParticleCount * 3);
-    for (let i = 0; i < wakeParticleCount * 3; i += 3) {
-      wakePos[i] = -60 - Math.random() * 90;
-      wakePos[i + 1] = -18 + (Math.random() - 0.5) * 6;
-      wakePos[i + 2] = (Math.random() - 0.5) * 8;
-    }
-    wakeGeo.setAttribute('position', new THREE.BufferAttribute(wakePos, 3));
-    const wakeMat = new THREE.PointsMaterial({
-      color: 0x38bdf8,
-      size: 1.8,
-      transparent: true,
-      opacity: 0.4
-    });
-    const subWake = new THREE.Points(wakeGeo, wakeMat);
-    subGroup.add(subWake);
-    subWakeRef.current = subWake;
-
     scene.add(subGroup);
 
     // ==========================================
     // 2. USNS VANGUARD SHIP DOWNRANGE
     // ==========================================
     const shipGroup = new THREE.Group();
-    shipGroup.position.set(280, 0, -420);
-
-    const shipHullGeo = new THREE.BoxGeometry(68, 12, 16);
-    const shipHullMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.4 });
+    shipGroup.position.set(240, 0, -380);
+    const shipHullGeo = new THREE.BoxGeometry(85, 14, 20);
+    const shipHullMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.35 });
     const shipHull = new THREE.Mesh(shipHullGeo, shipHullMat);
-    shipHull.position.y = 4;
+    shipHull.position.y = 5;
     shipGroup.add(shipHull);
 
-    [-20, -7, 7, 20].forEach((xPos, idx) => {
-      const rad = idx === 1 || idx === 2 ? 6.5 : 5.0;
-      const domeGeo = new THREE.SphereGeometry(rad, 16, 16);
+    [-25, -9, 9, 25].forEach((xPos, idx) => {
+      const rad = idx === 1 || idx === 2 ? 8.0 : 6.0;
+      const domeGeo = new THREE.SphereGeometry(rad, 20, 20);
       const domeMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
       const dome = new THREE.Mesh(domeGeo, domeMat);
-      dome.position.set(xPos, 14, 0);
+      dome.position.set(xPos, 16, 0);
       shipGroup.add(dome);
     });
     scene.add(shipGroup);
@@ -222,263 +721,245 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
     // 3. TARGET SILO COMPLEX DOWNRANGE
     // ==========================================
     const targetGroup = new THREE.Group();
-    targetGroup.position.set(0, 0.1, -1200); // 4000nm downrange simulated
+    targetGroup.position.set(0, 0.1, -1200);
     targetComplexRef.current = targetGroup;
 
-    // Hardened Silo #41 Reinforced Door
-    const siloRingGeo = new THREE.RingGeometry(8, 22, 32);
-    const siloRingMat = new THREE.MeshBasicMaterial({
-      color: 0x475569,
-      side: THREE.DoubleSide
-    });
+    // Hardened Silo #41 Blast Door
+    const siloRingGeo = new THREE.RingGeometry(10, 26, 32);
+    const siloRingMat = new THREE.MeshBasicMaterial({ color: 0x475569, side: THREE.DoubleSide });
     const siloRing = new THREE.Mesh(siloRingGeo, siloRingMat);
     siloRing.rotation.x = -Math.PI / 2;
     targetGroup.add(siloRing);
 
-    // Hardened Silo Blast Door (center 2000 psi cap)
-    const doorGeo = new THREE.CircleGeometry(7.5, 32);
+    const doorGeo = new THREE.CircleGeometry(9.0, 32);
     const doorMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.9 });
     const door = new THREE.Mesh(doorGeo, doorMat);
     door.rotation.x = -Math.PI / 2;
     door.position.y = 0.05;
     targetGroup.add(door);
 
-    // 2,000 PSI Lethal Crater Radius Circle (Green dashed)
-    const lethalGeo = new THREE.RingGeometry(65, 68, 48);
+    // Lethal Crater Radius Circle (Green)
+    const lethalGeo = new THREE.RingGeometry(75, 78, 48);
     const lethalMat = new THREE.MeshBasicMaterial({ color: 0x10b981, side: THREE.DoubleSide });
     const lethalCircle = new THREE.Mesh(lethalGeo, lethalMat);
     lethalCircle.rotation.x = -Math.PI / 2;
     targetGroup.add(lethalCircle);
 
-    // Target Label Crosshair Ring
-    const crosshairGeo = new THREE.RingGeometry(180, 185, 48);
+    // Target Crosshair Ring (Red)
+    const crosshairGeo = new THREE.RingGeometry(200, 205, 48);
     const crosshairMat = new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide, transparent: true, opacity: 0.6 });
     const crosshair = new THREE.Mesh(crosshairGeo, crosshairMat);
     crosshair.rotation.x = -Math.PI / 2;
     targetGroup.add(crosshair);
-
     scene.add(targetGroup);
 
     // Detonation Nuclear Flash Sphere
-    const flashGeo = new THREE.SphereGeometry(45, 32, 32);
-    const flashMat = new THREE.MeshBasicMaterial({
-      color: 0xffedd5,
-      transparent: true,
-      opacity: 0.0
-    });
+    const flashGeo = new THREE.SphereGeometry(55, 32, 32);
+    const flashMat = new THREE.MeshBasicMaterial({ color: 0xffedd5, transparent: true, opacity: 0.0 });
     const detFlash = new THREE.Mesh(flashGeo, flashMat);
     detFlash.position.set(0, 15, -1200);
     scene.add(detFlash);
     detonationFlashRef.current = detFlash;
 
     // ==========================================
-    // 4. DEEP SPACE STARFIELD
-    // ==========================================
-    const starCount = 3500;
-    const starGeo = new THREE.BufferGeometry();
-    const starPositions = new Float32Array(starCount * 3);
-    for (let i = 0; i < starCount * 3; i += 3) {
-      starPositions[i] = (Math.random() - 0.5) * 5000;
-      starPositions[i + 1] = Math.random() * 2500 + 80;
-      starPositions[i + 2] = (Math.random() - 0.5) * 5000;
-    }
-    starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
-    const starMat = new THREE.PointsMaterial({ color: 0xffffff, size: 2.8, sizeAttenuation: true });
-    scene.add(new THREE.Points(starGeo, starMat));
-
-    // ==========================================
-    // 5. UGM-133A TRIDENT II MISSILE & BUBBLE
+    // 4. UGM-133A TRIDENT II MISSILE (PROMINENT & ENLARGED)
     // ==========================================
     const missileGroup = new THREE.Group();
-    missileGroup.position.set(-60, -15, 2.4); // right above Tube #4
+    missileGroup.position.set(0, -14, 0);
     missileGroupRef.current = missileGroup;
 
-    // --- STEAM / AIR BUBBLE ENVELOPE (SUPERCAVITATION CAVITY) ---
-    // Surrounds the missile while ascending through the water column
-    const bubbleGeo = new THREE.SphereGeometry(3.6, 24, 24);
-    bubbleGeo.scale(1.0, 3.2, 1.0); // elongated capsule shape
+    // --- SUPERCAVITATING STEAM / AIR BUBBLE ENVELOPE ---
+    const bubbleGeo = new THREE.SphereGeometry(5.2, 28, 28);
+    bubbleGeo.scale(1.0, 3.2, 1.0);
     const bubbleMat = new THREE.MeshStandardMaterial({
-      color: 0xa5f3fc,
+      color: 0x38bdf8,
       transparent: true,
-      opacity: 0.38,
+      opacity: 0.42,
       roughness: 0.1,
-      metalness: 0.2,
-      wireframe: false
+      metalness: 0.3
     });
     const steamBubbleMesh = new THREE.Mesh(bubbleGeo, bubbleMat);
-    steamBubbleMesh.position.y = 7.5;
+    steamBubbleMesh.position.y = 11.0;
     missileGroup.add(steamBubbleMesh);
     steamBubbleMeshRef.current = steamBubbleMesh;
 
-    // Rising Air/Steam Bubbles Particles inside water column
-    const bubbleCount = 120;
+    // Water column bubble particles
+    const bubbleCount = 160;
     const bGeo = new THREE.BufferGeometry();
     const bPos = new Float32Array(bubbleCount * 3);
     for (let i = 0; i < bubbleCount * 3; i += 3) {
-      bPos[i] = (Math.random() - 0.5) * 5.5;
-      bPos[i + 1] = Math.random() * 16 - 2;
-      bPos[i + 2] = (Math.random() - 0.5) * 5.5;
+      bPos[i] = (Math.random() - 0.5) * 8.0;
+      bPos[i + 1] = Math.random() * 24 - 4;
+      bPos[i + 2] = (Math.random() - 0.5) * 8.0;
     }
     bGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3));
-    const bMat = new THREE.PointsMaterial({
-      color: 0xe0f2fe,
-      size: 1.5,
-      transparent: true,
-      opacity: 0.85
-    });
+    const bMat = new THREE.PointsMaterial({ color: 0xe0f2fe, size: 2.2, transparent: true, opacity: 0.85 });
     const bubbleParticles = new THREE.Points(bGeo, bMat);
     missileGroup.add(bubbleParticles);
     bubbleParticlesRef.current = bubbleParticles;
 
-    // Bubble Burst Cavitation Ring (at water surface)
-    const burstGeo = new THREE.RingGeometry(2.0, 18.0, 32);
-    const burstMat = new THREE.MeshBasicMaterial({
-      color: 0xbae6fd,
-      transparent: true,
-      opacity: 0.0,
-      side: THREE.DoubleSide
-    });
+    // Bubble Burst Foam Ring at Water Surface
+    const burstGeo = new THREE.RingGeometry(3.0, 26.0, 36);
+    const burstMat = new THREE.MeshBasicMaterial({ color: 0xbae6fd, transparent: true, opacity: 0.0, side: THREE.DoubleSide });
     const bubbleBurstMesh = new THREE.Mesh(burstGeo, burstMat);
     bubbleBurstMesh.rotation.x = -Math.PI / 2;
-    bubbleBurstMesh.position.set(-60, 0.2, 2.4);
+    bubbleBurstMesh.position.set(0, 0.2, 0);
     scene.add(bubbleBurstMesh);
     bubbleBurstMeshRef.current = bubbleBurstMesh;
 
-    // --- MISSILE BODIES ---
-    // Stage 1 (Carbon Epoxy Motor)
-    const stage1Geo = new THREE.CylinderGeometry(1.6, 1.6, 6.5, 32);
-    const stage1Mat = new THREE.MeshStandardMaterial({ color: 0x22262c, roughness: 0.3, metalness: 0.5 });
+    // --- MISSILE BODIES (HIGH-CONTRAST TACTICAL OFF-WHITE COMPOSITE) ---
+    // Stage 1 (Carbon Epoxy Motor with dark interstage ring)
+    const stage1Group = new THREE.Group();
+    stage1Group.position.y = 4.75;
+    const stage1Geo = new THREE.CylinderGeometry(2.6, 2.6, 9.5, 36);
+    const stage1Mat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.25, metalness: 0.2 });
     const stage1Mesh = new THREE.Mesh(stage1Geo, stage1Mat);
-    stage1Mesh.position.y = 3.25;
-    missileGroup.add(stage1Mesh);
-    stage1MeshRef.current = stage1Mesh;
+    stage1Group.add(stage1Mesh);
 
-    // Stage 2
-    const stage2Geo = new THREE.CylinderGeometry(1.6, 1.6, 4.5, 32);
-    const stage2Mat = new THREE.MeshStandardMaterial({ color: 0x2b313a, roughness: 0.3, metalness: 0.5 });
+    // Carbon interstage skirt ring
+    const skirtGeo = new THREE.CylinderGeometry(2.65, 2.65, 1.2, 36);
+    const skirtMat = new THREE.MeshStandardMaterial({ color: 0x0f172a, roughness: 0.4, metalness: 0.5 });
+    const skirtMesh = new THREE.Mesh(skirtGeo, skirtMat);
+    skirtMesh.position.y = 4.2;
+    stage1Group.add(skirtMesh);
+
+    missileGroup.add(stage1Group);
+    stage1MeshRef.current = stage1Group as any;
+
+    // Stage 2 (Clean tactical composite with orange stripe)
+    const stage2Group = new THREE.Group();
+    stage2Group.position.y = 12.5;
+    const stage2Geo = new THREE.CylinderGeometry(2.6, 2.6, 6.5, 36);
+    const stage2Mat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, roughness: 0.25, metalness: 0.2 });
     const stage2Mesh = new THREE.Mesh(stage2Geo, stage2Mat);
-    stage2Mesh.position.y = 8.75;
-    missileGroup.add(stage2Mesh);
-    stage2MeshRef.current = stage2Mesh;
+    stage2Group.add(stage2Mesh);
 
-    // Stage 3
-    const stage3Geo = new THREE.CylinderGeometry(1.5, 1.6, 3.2, 32);
-    const stage3Mat = new THREE.MeshStandardMaterial({ color: 0x333b47, roughness: 0.3, metalness: 0.5 });
+    // Interstage 2 ring
+    const skirt2Mesh = new THREE.Mesh(skirtGeo, skirtMat);
+    skirt2Mesh.position.y = 2.8;
+    stage2Group.add(skirt2Mesh);
+
+    missileGroup.add(stage2Group);
+    stage2MeshRef.current = stage2Group as any;
+
+    // Stage 3 (Light composite motor casing)
+    const stage3Group = new THREE.Group();
+    stage3Group.position.y = 18.0;
+    const stage3Geo = new THREE.CylinderGeometry(2.5, 2.6, 4.8, 36);
+    const stage3Mat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.3, metalness: 0.2 });
     const stage3Mesh = new THREE.Mesh(stage3Geo, stage3Mat);
-    stage3Mesh.position.y = 12.6;
-    missileGroup.add(stage3Mesh);
-    stage3MeshRef.current = stage3Mesh;
+    stage3Group.add(stage3Mesh);
+    missileGroup.add(stage3Group);
+    stage3MeshRef.current = stage3Group as any;
 
     // --- POST-BOOST VEHICLE (PBV) / EQUIPMENT SECTION & MIRV PLATFORM ---
     const pbvGroup = new THREE.Group();
-    pbvGroup.position.y = 14.2;
+    pbvGroup.position.y = 20.6;
     missileGroup.add(pbvGroup);
     pbvGroupRef.current = pbvGroup;
 
-    // PBV Bus Core
-    const busCoreGeo = new THREE.CylinderGeometry(1.48, 1.48, 1.2, 32);
-    const busCoreMat = new THREE.MeshStandardMaterial({ color: 0x475569, metalness: 0.7, roughness: 0.3 });
+    // Anodized Gold Bus Core
+    const busCoreGeo = new THREE.CylinderGeometry(2.4, 2.4, 1.8, 32);
+    const busCoreMat = new THREE.MeshStandardMaterial({ color: 0xca8a04, metalness: 0.85, roughness: 0.2 });
     const busCore = new THREE.Mesh(busCoreGeo, busCoreMat);
-    busCore.position.y = 0.6;
+    busCore.position.y = 0.9;
     pbvGroup.add(busCore);
 
-    // MIRV Deployment Platform Base
-    const platformGeo = new THREE.CylinderGeometry(1.4, 1.4, 0.4, 24);
-    const platformMat = new THREE.MeshStandardMaterial({ color: 0xd97706, metalness: 0.8, roughness: 0.2 });
+    // MIRV Deployment Platform Ring
+    const platformGeo = new THREE.CylinderGeometry(2.3, 2.3, 0.6, 28);
+    const platformMat = new THREE.MeshStandardMaterial({ color: 0xf59e0b, metalness: 0.8, roughness: 0.25 });
     const platform = new THREE.Mesh(platformGeo, platformMat);
-    platform.position.y = 1.4;
+    platform.position.y = 2.1;
     pbvGroup.add(platform);
 
-    // 4 Reentry Vehicles (Mk 4 / Mk 5 W76/W88 nuclear cones)
+    // 4 Reentry Vehicles (Mk 4/5 W76/W88 aerodynamic nuclear cones)
     const warheadMeshes: THREE.Mesh[] = [];
     const warheadAngles = [0, Math.PI / 2, Math.PI, (3 * Math.PI) / 2];
     warheadAngles.forEach((ang) => {
-      const whGeo = new THREE.ConeGeometry(0.35, 1.8, 16);
-      const whMat = new THREE.MeshStandardMaterial({
-        color: 0xf1f5f9,
-        metalness: 0.6,
-        roughness: 0.2
-      });
+      const whGeo = new THREE.ConeGeometry(0.65, 3.0, 20);
+      const whMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, metalness: 0.5, roughness: 0.25 });
       const wh = new THREE.Mesh(whGeo, whMat);
-      const rad = 0.75;
-      wh.position.set(Math.cos(ang) * rad, 2.3, Math.sin(ang) * rad);
+      wh.position.set(Math.cos(ang) * 1.1, 3.5, Math.sin(ang) * 1.1);
       pbvGroup.add(wh);
       warheadMeshes.push(wh);
     });
     warheadsRef.current = warheadMeshes;
 
-    // Vernier Attitude Control Thruster Plumes
+    // PBV Attitude Vernier Thrusters
     const thrusterPlumes: THREE.Mesh[] = [];
-    [-1.45, 1.45].forEach((xOff) => {
-      const tGeo = new THREE.ConeGeometry(0.3, 0.9, 12);
+    [-2.35, 2.35].forEach((xOff) => {
+      const tGeo = new THREE.ConeGeometry(0.45, 1.4, 16);
       const tMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.0 });
       const plume = new THREE.Mesh(tGeo, tMat);
       plume.rotation.z = xOff > 0 ? -Math.PI / 2 : Math.PI / 2;
-      plume.position.set(xOff, 0.6, 0);
+      plume.position.set(xOff, 0.9, 0);
       pbvGroup.add(plume);
       thrusterPlumes.push(plume);
     });
     thrusterPlumesRef.current = thrusterPlumes;
 
-    // Nose Shroud / Fairing Halves (ejected at platform deploy)
-    const fairingHalfGeo = new THREE.ConeGeometry(1.5, 3.2, 16, 1, false, 0, Math.PI);
-    const fairingMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, metalness: 0.4, roughness: 0.2 });
+    // Nose Shroud Fairing Halves (ejected at platform deploy)
+    const fairingHalfGeo = new THREE.ConeGeometry(2.5, 5.5, 24, 1, false, 0, Math.PI);
+    const fairingMat = new THREE.MeshStandardMaterial({ color: 0xf8fafc, metalness: 0.35, roughness: 0.2 });
 
     const fairingLeft = new THREE.Mesh(fairingHalfGeo, fairingMat);
-    fairingLeft.position.y = 1.6;
+    fairingLeft.position.y = 2.5;
     fairingLeft.rotation.y = 0;
     pbvGroup.add(fairingLeft);
     noseFairingLeftRef.current = fairingLeft;
 
     const fairingRight = new THREE.Mesh(fairingHalfGeo, fairingMat);
-    fairingRight.position.y = 1.6;
+    fairingRight.position.y = 2.5;
     fairingRight.rotation.y = Math.PI;
     pbvGroup.add(fairingRight);
     noseFairingRightRef.current = fairingRight;
 
-    // Telescoping Aerospike
-    const spikeGeo = new THREE.CylinderGeometry(0.12, 0.12, 3.5, 16);
-    const spikeMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.9, roughness: 0.2 });
+    // Telescoping Aerospike with Drag-Reduction Disc
+    const spikeGeo = new THREE.CylinderGeometry(0.18, 0.18, 5.5, 16);
+    const spikeMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, metalness: 0.95, roughness: 0.15 });
     const aerospike = new THREE.Mesh(spikeGeo, spikeMat);
-    aerospike.position.y = 17.5;
-    const discGeo = new THREE.CylinderGeometry(0.4, 0.4, 0.15, 16);
-    const discMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.9 });
+    aerospike.position.y = 25.5;
+
+    const discGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.25, 20);
+    const discMat = new THREE.MeshStandardMaterial({ color: 0x94a3b8, metalness: 0.9 });
     const disc = new THREE.Mesh(discGeo, discMat);
-    disc.position.y = 1.75;
+    disc.position.y = 2.75;
     aerospike.add(disc);
+
     missileGroup.add(aerospike);
     aerospikeMeshRef.current = aerospike;
 
-    // Detached Bow Shock Cone
-    const shockGeo = new THREE.ConeGeometry(3.5, 6.0, 24, 1, true);
-    const shockMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
-      transparent: true,
-      opacity: 0.25,
-      wireframe: true
-    });
+    // Detached Supersonic Shock Cone
+    const shockGeo = new THREE.ConeGeometry(5.5, 9.5, 28, 1, true);
+    const shockMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.3, wireframe: true });
     const shockCone = new THREE.Mesh(shockGeo, shockMat);
-    shockCone.position.y = 14.5;
+    shockCone.position.y = 21.0;
     shockCone.rotation.x = Math.PI;
     missileGroup.add(shockCone);
     shockConeMeshRef.current = shockCone;
 
-    // Rocket Exhaust Plume
-    const flameGeo = new THREE.ConeGeometry(1.8, 8.5, 24);
-    const flameMat = new THREE.MeshBasicMaterial({
-      color: 0xf59e0b,
-      transparent: true,
-      opacity: 0.85
-    });
-    const flameMesh = new THREE.Mesh(flameGeo, flameMat);
-    flameMesh.position.y = -4.2;
-    flameMesh.rotation.x = Math.PI;
-    missileGroup.add(flameMesh);
-    flameMeshRef.current = flameMesh;
+    // --- DUAL-LAYER ROCKET EXHAUST FLAME ---
+    // Outer roaring orange-amber fire plume
+    const flameOuterGeo = new THREE.ConeGeometry(3.6, 18.0, 24);
+    const flameOuterMat = new THREE.MeshBasicMaterial({ color: 0xf97316, transparent: true, opacity: 0.85 });
+    const flameOuterMesh = new THREE.Mesh(flameOuterGeo, flameOuterMat);
+    flameOuterMesh.position.y = -6.0;
+    flameOuterMesh.rotation.x = Math.PI;
+    missileGroup.add(flameOuterMesh);
+    flameOuterMeshRef.current = flameOuterMesh;
+
+    // Inner electric blue-white mach diamond core
+    const flameInnerGeo = new THREE.ConeGeometry(1.8, 10.0, 20);
+    const flameInnerMat = new THREE.MeshBasicMaterial({ color: 0xbae6fd, transparent: true, opacity: 0.95 });
+    const flameInnerMesh = new THREE.Mesh(flameInnerGeo, flameInnerMat);
+    flameInnerMesh.position.y = -4.0;
+    flameInnerMesh.rotation.x = Math.PI;
+    missileGroup.add(flameInnerMesh);
+    flameInnerMeshRef.current = flameInnerMesh;
 
     scene.add(missileGroup);
 
-    // Reentry Plasma Trails (Line segments behind warheads)
+    // Reentry Plasma Trails behind warheads
     const plasmaLines: THREE.Line[] = [];
     for (let i = 0; i < 4; i++) {
       const pGeo = new THREE.BufferGeometry();
@@ -490,28 +971,37 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
     }
     plasmaTrailsRef.current = plasmaLines;
 
-    // Resize Handler
+    // Initial render
+    updateSimulationVisuals(simTimeRef.current);
+
+    // Resize Handler with ResizeObserver
     const handleResize = () => {
       if (!containerRef.current || !renderer || !camera) return;
       const newW = containerRef.current.clientWidth;
       const newH = containerRef.current.clientHeight;
+      if (newW === 0 || newH === 0) return;
       camera.aspect = newW / newH;
       camera.updateProjectionMatrix();
       renderer.setSize(newW, newH);
+      updateSimulationVisuals(simTimeRef.current);
     };
+
     window.addEventListener('resize', handleResize);
+    const resizeObserver = new ResizeObserver(() => handleResize());
+    if (containerRef.current) resizeObserver.observe(containerRef.current);
 
     return () => {
       window.removeEventListener('resize', handleResize);
+      resizeObserver.disconnect();
       if (animFrameId.current) cancelAnimationFrame(animFrameId.current);
       renderer.dispose();
       if (containerRef.current?.contains(renderer.domElement)) {
         containerRef.current.removeChild(renderer.domElement);
       }
     };
-  }, []);
+  }, [updateSimulationVisuals]);
 
-  // Main Simulation Loop
+  // Main Animation Loop
   useEffect(() => {
     let lastTime = performance.now();
 
@@ -520,468 +1010,23 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
       const deltaSec = (currentTime - lastTime) / 1000;
       lastTime = currentTime;
 
-      if (!isPlaying) {
-        rendererRef.current?.render(sceneRef.current!, cameraRef.current!);
-        return;
+      if (isPlaying) {
+        const step = deltaSec * simulationSpeed;
+        simTimeRef.current = Math.min(125.0, simTimeRef.current + step);
+
+        // Throttle React state telemetry updates (25Hz) to keep UI fast & decoupled from WebGL loop
+        if (currentTime - lastStateUpdateRef.current > 40) {
+          lastStateUpdateRef.current = currentTime;
+          const updated = calculateTelemetryAtTime(simTimeRef.current, telemetry.gssEnabled);
+          setTelemetry((prev) => ({
+            ...prev,
+            ...updated
+          }));
+        }
       }
 
-      setTelemetry((prev) => {
-        const step = deltaSec * simulationSpeed;
-        const newTime = prev.missionTime + step;
-
-        let stage = prev.stage;
-        let alt = prev.altitude;
-        let vel = prev.velocity;
-        let downrange = prev.downrange;
-        let fuel = prev.fuelPercent;
-        let drift = prev.inertialDrift;
-        let starStatus = prev.starLockStatus;
-        let pitch = prev.pitchAngle;
-        let dynPress = prev.dynamicPressure;
-        let bubbleInt = prev.bubbleIntegrity;
-        let stream = [...prev.telemetryStream];
-        const isGss = prev.gssEnabled;
-
-        // Calculate Deflection & Accuracy depending on GSS
-        const currentDeflection = isGss ? 0.08 : 24.5;
-        const missMeters = isGss ? 38 : 1420;
-        const overpressure = isGss ? 2850 : 38;
-        const killProb = isGss ? 99.4 : 18.2;
-
-        // 1. PRE-LAUNCH 4-KNOT PATROL (0 to 3s)
-        if (newTime < 3) {
-          stage = 'PRE_LAUNCH_4KT';
-          alt = -0.045; // submerged 45m
-          vel = 2.06; // 4 knots forward speed
-          downrange = 0;
-          fuel = 100;
-          pitch = 90;
-          dynPress = 0;
-          bubbleInt = 100;
-          drift = isGss ? 15 : 120;
-        }
-        // 2. SUBMERGED STEAM BUBBLE EJECTION (3s to 5.8s)
-        else if (newTime >= 3 && newTime < 5.8) {
-          if (stage !== 'SUB_BUBBLE_EJECT') {
-            soundFx.playBubbleEjection();
-            stream.unshift(`T+${newTime.toFixed(1)}s: 4.0-KT RUN: STEAM GENERATOR EJECTS MISSILE INTO PROTECTIVE GAS BUBBLE`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: SUPERCAVITATING STEAM ENVELOPE SHIELDING TRIDENT SKIN FROM 4-KT HYDRODYNAMIC SHEAR`);
-          }
-          stage = 'SUB_BUBBLE_EJECT';
-          const tRel = newTime - 3;
-          alt = -0.045 + tRel * 0.016; // rises through water column
-          vel = 24.5; // ~25 m/s upward
-          bubbleInt = 100;
-        }
-        // 3. OCEAN SURFACE BROACH & BUBBLE BURST (5.8s to 6.8s)
-        else if (newTime >= 5.8 && newTime < 6.8) {
-          if (stage !== 'BUBBLE_BURST') {
-            soundFx.playBubbleBurst();
-            stream.unshift(`T+${newTime.toFixed(1)}s: SURFACE BROACH! PROTECTIVE GAS BUBBLE BURSTS WITH CAVITATION SHOCK`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: WATER CLEARING FROM NOSE CONE - SOLID MOTOR SAFE-AND-ARM UNLOCKED`);
-          }
-          stage = 'BUBBLE_BURST';
-          alt = 0.005 + (newTime - 5.8) * 0.025;
-          vel = 22;
-          bubbleInt = Math.max(0, 100 - (newTime - 5.8) * 120);
-        }
-        // 4. MOTOR IGNITION & AEROSPIKE EXTENSION (6.8s to 12s)
-        else if (newTime >= 6.8 && newTime < 12) {
-          if (stage !== 'MOTOR_IGNITION' && stage !== 'AEROSPIKE') {
-            soundFx.startRocketRumble();
-            soundFx.playCarrierLock();
-            stream.unshift(`T+${newTime.toFixed(1)}s: BUBBLE BURST COMPLETE - STAGE 1 NEPE-75 SOLID MOTOR IGNITION!`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: TELESCOPING AEROSPIKE FULLY EXTENDED - 50% DRAG REDUCTION ACTIVE`);
-          }
-          stage = 'AEROSPIKE';
-          const tRel = newTime - 6.8;
-          alt = 0.03 + tRel * 0.42;
-          vel = 95 + tRel * 140;
-          fuel = 98 - tRel * 2.5;
-          pitch = 88;
-          dynPress = tRel * 9.2;
-          bubbleInt = 0;
-          drift += step * (isGss ? 4 : 22);
-        }
-        // 5. STAGE 1 BOOST THROUGH TRANSONIC (12s to 28s)
-        else if (newTime >= 12 && newTime < 28) {
-          if (stage !== 'STAGE_1') {
-            stream.unshift(`T+${newTime.toFixed(1)}s: TRANSONIC PITCH-OVER - GRAVITY TURN INITIATED`);
-          }
-          stage = 'STAGE_1';
-          const tRel = newTime - 12;
-          alt = 2.2 + tRel * 1.8;
-          vel = 820 + tRel * 95;
-          downrange = tRel * 1.4;
-          fuel = 85 - tRel * 2.8;
-          pitch = 88 - tRel * 1.5;
-          dynPress = Math.max(0, 48 - (tRel - 6) ** 2 * 0.4);
-          drift += step * (isGss ? 8 : 45);
-        }
-        // 6. STAGE 2 BOOST (28s to 45s)
-        else if (newTime >= 28 && newTime < 45) {
-          if (stage !== 'STAGE_2') {
-            soundFx.playRadarPing();
-            stream.unshift(`T+${newTime.toFixed(1)}s: STAGE 1 BURNOUT - INTERSTAGE SEPARATION - STAGE 2 IGNITION`);
-          }
-          stage = 'STAGE_2';
-          const tRel = newTime - 28;
-          alt = 31 + tRel * 3.6;
-          vel = 2340 + tRel * 140;
-          downrange = 22 + tRel * 9.8;
-          fuel = 40 - tRel * 1.5;
-          pitch = 64 - tRel * 1.4;
-          dynPress = Math.max(0, 3.5 - tRel * 0.2);
-          drift += step * (isGss ? 10 : 65);
-        }
-        // 7. STAGE 3 VACUUM BURN (45s to 60s)
-        else if (newTime >= 45 && newTime < 60) {
-          if (stage !== 'STAGE_3') {
-            stream.unshift(`T+${newTime.toFixed(1)}s: STAGE 2 SEPARATION - STAGE 3 MOTOR VACUUM INSERTION`);
-          }
-          stage = 'STAGE_3';
-          const tRel = newTime - 45;
-          alt = 92 + tRel * 4.4;
-          vel = 4720 + tRel * 160;
-          downrange = 188 + tRel * 22;
-          fuel = 14 - tRel * 0.9;
-          pitch = 40 - tRel * 0.8;
-          dynPress = 0;
-          drift += step * (isGss ? 12 : 78);
-        }
-        // 8. REACH ATTITUDE & VERNIER TRIMMING (60s to 72s)
-        else if (newTime >= 60 && newTime < 72) {
-          if (stage !== 'REACH_ATTITUDE') {
-            soundFx.stopRocketRumble();
-            soundFx.playCarrierLock();
-            soundFx.playThrusterPuff();
-            stream.unshift(`T+${newTime.toFixed(1)}s: STAGE 3 CUTOFF - POST-BOOST VEHICLE (PBV) IN EXOSPHERE`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: VERNIER THRUSTERS FIRING - PBV REACHING PRECISE ATTITUDE`);
-          }
-          stage = 'REACH_ATTITUDE';
-          const tRel = newTime - 60;
-          alt = 158 + tRel * 2.8;
-          vel = 7120 + tRel * 8;
-          downrange = 518 + tRel * 40;
-          fuel = Math.max(0, 6 - tRel * 0.2);
-          pitch = 28;
-          if (starStatus === 'CORRECTED') {
-            drift = Math.max(38, drift * 0.9);
-          }
-        }
-        // 9. PLATFORM DEPLOY & NOSE SHROUD JETTISON (72s to 82s)
-        else if (newTime >= 72 && newTime < 82) {
-          if (stage !== 'PLATFORM_DEPLOY') {
-            soundFx.playThrusterPuff();
-            stream.unshift(`T+${newTime.toFixed(1)}s: NOSE SHROUD JETTISONED - MIRV DEPLOYMENT PLATFORM EXPOSED`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: PBV TARGETING COMPUTER COMPUTING INDIVIDUAL RELEASE VECTORS`);
-          }
-          stage = 'PLATFORM_DEPLOY';
-          const tRel = newTime - 72;
-          alt = 191 + tRel * 2.4;
-          vel = 7200;
-          downrange = 998 + tRel * 45;
-          fuel = 4;
-          pitch = 25;
-        }
-        // 10. WARHEAD RELEASE ON TARGET VECTORS (82s to 96s)
-        else if (newTime >= 82 && newTime < 96) {
-          if (stage !== 'WARHEAD_RELEASE') {
-            soundFx.playWarheadRelease();
-            stream.unshift(`T+${newTime.toFixed(1)}s: PBV RELEASING REENTRY VEHICLES (MK 4/5) ON DIVERGENT SUB-TRAJECTORIES`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: GSS CALIBRATION STATUS: ${isGss ? 'ACTIVE (SINS ZERO-BIASED)' : 'BYPASSED (RAW TILT BIAS)'}`);
-          }
-          stage = 'WARHEAD_RELEASE';
-          const tRel = newTime - 82;
-          alt = 215 + tRel * 1.8;
-          vel = 7250;
-          downrange = 1448 + tRel * 52;
-          fuel = 2;
-          pitch = 15;
-        }
-        // 11. HYPERSONIC ATMOSPHERIC REENTRY STREAK (96s to 110s)
-        else if (newTime >= 96 && newTime < 110) {
-          if (stage !== 'REENTRY_STREAK') {
-            soundFx.playRadarPing();
-            stream.unshift(`T+${newTime.toFixed(1)}s: ENTRY INTERFACE (400,000 FT) - MACH 22 IONIZING PLASMA TRAIL`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: DOWNRANGE RADAR (USNS VANGUARD) TRACKING WARHEADS TO TARGET`);
-          }
-          stage = 'REENTRY_STREAK';
-          const tRel = newTime - 96;
-          alt = Math.max(0.5, 240 - tRel * 17);
-          vel = 7400 - tRel * 90;
-          downrange = 2176 + tRel * 68;
-          fuel = 0;
-          pitch = -45 - tRel * 2.2;
-        }
-        // 12. TARGET SILO IMPACT & DETONATION (110s+)
-        else if (newTime >= 110) {
-          if (stage !== 'TARGET_IMPACT') {
-            soundFx.playDetonation();
-            stream.unshift(`T+${newTime.toFixed(1)}s: *** TERMINAL IMPACT DETONATION ***`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: GSS IMPACT REPORT: MISS DISTANCE ${missMeters}M | OVERPRESSURE ${overpressure} PSI`);
-            stream.unshift(`T+${newTime.toFixed(1)}s: SILO DAMAGE ASSESSMENT: ${isGss ? 'HARD TARGET CRUSHED (Pk = 99.4%)' : 'TARGET SURVIVED (Pk = 18.2%)'}`);
-          }
-          stage = 'TARGET_IMPACT';
-          alt = 0;
-          vel = 0;
-          downrange = 3128;
-          fuel = 0;
-          pitch = -90;
-        }
-
-        if (stream.length > 8) stream = stream.slice(0, 8);
-
-        // ==========================================
-        // 3D OBJECT VISUAL UPDATES
-        // ==========================================
-        // 1. Submarine Movement (4 knots = slow forward translation along X)
-        if (subGroupRef.current) {
-          const subX = -60 + (newTime * 0.4); // 4-knot forward run
-          subGroupRef.current.position.x = subX;
-        }
-
-        // 2. Missile 3D Position & Attitude
-        if (missileGroupRef.current) {
-          // Underwater or Atmospheric coordinates
-          let visualY = alt * 1.5;
-          let visualZ = -(downrange * 0.38);
-
-          if (stage === 'TARGET_IMPACT') {
-            visualY = 0.5;
-            visualZ = -1200;
-          }
-
-          missileGroupRef.current.position.set(-60 + (newTime * 0.1), visualY, visualZ);
-
-          // Attitude Rotation (pitch)
-          const rad = (pitch * Math.PI) / 180;
-          missileGroupRef.current.rotation.x = -(Math.PI / 2 - rad);
-
-          // Steam Bubble Envelope Visibility & Pulse
-          if (steamBubbleMeshRef.current) {
-            const isSubmerged = stage === 'PRE_LAUNCH_4KT' || stage === 'SUB_BUBBLE_EJECT' || stage === 'BUBBLE_BURST';
-            steamBubbleMeshRef.current.visible = isSubmerged && bubbleInt > 5;
-            if (isSubmerged) {
-              const pulse = 1.0 + Math.sin(newTime * 14) * 0.06;
-              steamBubbleMeshRef.current.scale.set(pulse, 3.2, pulse);
-            }
-          }
-
-          // Rising Bubble Particles
-          if (bubbleParticlesRef.current) {
-            bubbleParticlesRef.current.visible = stage === 'SUB_BUBBLE_EJECT';
-            if (stage === 'SUB_BUBBLE_EJECT') {
-              bubbleParticlesRef.current.rotation.y += 0.08;
-            }
-          }
-
-          // Bubble Burst Ring at Ocean Surface
-          if (bubbleBurstMeshRef.current) {
-            if (stage === 'BUBBLE_BURST') {
-              const bScale = (newTime - 5.8) * 18;
-              bubbleBurstMeshRef.current.scale.set(bScale, bScale, 1);
-              (bubbleBurstMeshRef.current.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.85 - (newTime - 5.8) * 0.85);
-            } else {
-              (bubbleBurstMeshRef.current.material as THREE.MeshBasicMaterial).opacity = 0;
-            }
-          }
-
-          // Motor Flame
-          if (flameMeshRef.current) {
-            const isMotorFired = stage === 'AEROSPIKE' || stage === 'STAGE_1' || stage === 'STAGE_2' || stage === 'STAGE_3';
-            flameMeshRef.current.visible = isMotorFired;
-            if (isMotorFired) {
-              let pulse = 0.9 + Math.random() * 0.3;
-              // Ignition flashes during stage transitions
-              if (stage === 'STAGE_2' && newTime < 28.5) pulse *= 1.5;
-              if (stage === 'STAGE_3' && newTime < 45.5) pulse *= 1.5;
-              flameMeshRef.current.scale.set(pulse, pulse * 1.3, pulse);
-              
-              // Shift flame position to the active stage base
-              if (stage === 'STAGE_3') {
-                flameMeshRef.current.position.y = 11.0 - 4.25; // 6.75
-              } else if (stage === 'STAGE_2') {
-                flameMeshRef.current.position.y = 6.5 - 4.25; // 2.25
-              } else {
-                flameMeshRef.current.position.y = -4.2;
-              }
-            }
-          }
-
-          // Aerospike extension
-          if (aerospikeMeshRef.current) {
-            const hasSpike = stage !== 'PRE_LAUNCH_4KT' && stage !== 'SUB_BUBBLE_EJECT' && stage !== 'BUBBLE_BURST';
-            aerospikeMeshRef.current.visible = hasSpike && stage !== 'PLATFORM_DEPLOY' && stage !== 'WARHEAD_RELEASE' && stage !== 'REENTRY_STREAK' && stage !== 'TARGET_IMPACT';
-          }
-
-          // Shock cone
-          if (shockConeMeshRef.current) {
-            shockConeMeshRef.current.visible = shockConeVisible && (stage === 'AEROSPIKE' || stage === 'STAGE_1');
-          }
-
-          // Staging Separations with visual animation
-          if (stage1MeshRef.current) {
-            if (newTime >= 28) {
-              const tSep1 = newTime - 28;
-              stage1MeshRef.current.position.y = 3.25 - Math.pow(tSep1, 1.4) * 3;
-              stage1MeshRef.current.visible = tSep1 < 6; // Hide after 6s to avoid clipping
-            } else {
-              stage1MeshRef.current.position.y = 3.25;
-              stage1MeshRef.current.visible = true;
-            }
-          }
-          if (stage2MeshRef.current) {
-            if (newTime >= 45) {
-              const tSep2 = newTime - 45;
-              stage2MeshRef.current.position.y = 8.75 - Math.pow(tSep2, 1.4) * 3;
-              stage2MeshRef.current.visible = tSep2 < 6;
-            } else {
-              stage2MeshRef.current.position.y = 8.75;
-              stage2MeshRef.current.visible = true;
-            }
-          }
-          if (stage3MeshRef.current) {
-            if (newTime >= 60) {
-              const tSep3 = newTime - 60;
-              stage3MeshRef.current.position.y = 12.6 - Math.pow(tSep3, 1.4) * 3;
-              stage3MeshRef.current.visible = tSep3 < 6;
-            } else {
-              stage3MeshRef.current.position.y = 12.6;
-              stage3MeshRef.current.visible = true;
-            }
-          }
-
-          // Nose Shroud Fairings (splitting apart at PLATFORM_DEPLOY)
-          if (noseFairingLeftRef.current && noseFairingRightRef.current) {
-            if (stage === 'PLATFORM_DEPLOY' || stage === 'WARHEAD_RELEASE' || stage === 'REENTRY_STREAK' || stage === 'TARGET_IMPACT') {
-              const deployT = Math.min(6, newTime - 72);
-              noseFairingLeftRef.current.position.x = -deployT * 1.5;
-              noseFairingLeftRef.current.position.z = -deployT * 1.2;
-              noseFairingRightRef.current.position.x = deployT * 1.5;
-              noseFairingRightRef.current.position.z = deployT * 1.2;
-              noseFairingLeftRef.current.rotation.z = deployT * 0.4;
-              noseFairingRightRef.current.rotation.z = -deployT * 0.4;
-            } else {
-              noseFairingLeftRef.current.position.set(0, 1.6, 0);
-              noseFairingRightRef.current.position.set(0, 1.6, 0);
-              noseFairingLeftRef.current.rotation.set(0, 0, 0);
-              noseFairingRightRef.current.rotation.set(0, Math.PI, 0);
-            }
-          }
-
-          // PBV Vernier Thruster Puffs (firing at REACH_ATTITUDE)
-          thrusterPlumesRef.current.forEach((plume) => {
-            const isFiring = stage === 'REACH_ATTITUDE' || stage === 'PLATFORM_DEPLOY';
-            (plume.material as THREE.MeshBasicMaterial).opacity = isFiring ? (0.4 + Math.random() * 0.5) : 0;
-          });
-
-          // 4 Reentry Vehicles Separation & Trajectories
-          warheadsRef.current.forEach((wh, idx) => {
-            if (stage === 'WARHEAD_RELEASE' || stage === 'REENTRY_STREAK' || stage === 'TARGET_IMPACT') {
-              const tSep = Math.min(25, newTime - 82);
-              // Target offset: with GSS tightly centered (<40m), without GSS offset by 1400m
-              const offsetBias = isGss ? (idx - 1.5) * 1.2 : ((idx - 1.5) * 6.0 + 35.0);
-              wh.position.x = Math.cos(idx * Math.PI / 2) * (0.8 + tSep * 0.35) + (offsetBias * 0.02);
-              wh.position.z = (idx - 1.5) * (tSep * 0.4);
-              wh.position.y = 2.3 - tSep * 0.15;
-            } else {
-              const ang = idx * Math.PI / 2;
-              wh.position.set(Math.cos(ang) * 0.75, 2.3, Math.sin(ang) * 0.75);
-            }
-          });
-        }
-
-        // Reentry Plasma Ionization Trails behind warheads
-        plasmaTrailsRef.current.forEach((line, idx) => {
-          if (stage === 'REENTRY_STREAK' && missileGroupRef.current) {
-            const mPos = missileGroupRef.current.position;
-            const wh = warheadsRef.current[idx];
-            const pArr = (line.geometry.attributes.position as THREE.BufferAttribute).array as Float32Array;
-            pArr[0] = mPos.x + wh.position.x;
-            pArr[1] = mPos.y + wh.position.y;
-            pArr[2] = mPos.z + wh.position.z;
-            pArr[3] = mPos.x + wh.position.x;
-            pArr[4] = mPos.y + wh.position.y + 35; // trailing upwards
-            pArr[5] = mPos.z + wh.position.z + 18;
-            line.geometry.attributes.position.needsUpdate = true;
-            (line.material as THREE.LineBasicMaterial).opacity = 0.85;
-          } else {
-            (line.material as THREE.LineBasicMaterial).opacity = 0;
-          }
-        });
-
-        // Detonation Nuclear Flash at Target Silo
-        if (detonationFlashRef.current) {
-          if (stage === 'TARGET_IMPACT') {
-            const tFlash = newTime - 110;
-            const flashScale = Math.min(4.5, 1.0 + tFlash * 3.5);
-            detonationFlashRef.current.scale.set(flashScale, flashScale, flashScale);
-            // Position near silo door: with GSS right on the door (x=0, z=-1200), without GSS far to side (x=55)
-            const targetX = isGss ? 0 : 65;
-            detonationFlashRef.current.position.set(targetX, 10, -1200);
-            (detonationFlashRef.current.material as THREE.MeshBasicMaterial).opacity = Math.max(0, 0.95 - tFlash * 0.2);
-          } else {
-            (detonationFlashRef.current.material as THREE.MeshBasicMaterial).opacity = 0;
-          }
-        }
-
-        // Camera Positioning Logic
-        if (cameraRef.current && missileGroupRef.current) {
-          const mPos = missileGroupRef.current.position;
-
-          if (cameraMode === 'SUB_4KT') {
-            // Underwater perspective tracking the Ohio-class sub at 4 knots
-            if (subGroupRef.current) {
-              const sPos = subGroupRef.current.position;
-              cameraRef.current.position.set(sPos.x + 35, sPos.y + 6, sPos.z + 28);
-              cameraRef.current.lookAt(sPos.x + 5, sPos.y + 4, sPos.z);
-            }
-          } else if (cameraMode === 'BUBBLE_CAM') {
-            // Close-up camera examining the steam bubble envelope around the Trident
-            cameraRef.current.position.set(mPos.x + 12, mPos.y + 4, mPos.z + 14);
-            cameraRef.current.lookAt(mPos.x, mPos.y + 6, mPos.z);
-          } else if (cameraMode === 'PLATFORM_BUS') {
-            // Close-up view of the PBV MIRV deployment platform
-            cameraRef.current.position.set(mPos.x + 8, mPos.y + 16, mPos.z + 10);
-            cameraRef.current.lookAt(mPos.x, mPos.y + 14, mPos.z);
-          } else if (cameraMode === 'TARGET_SILO') {
-            // Downrange tactical view looking at the reinforced ICBM silo
-            cameraRef.current.position.set(35, 45, -1140);
-            cameraRef.current.lookAt(0, 0, -1200);
-          } else if (cameraMode === 'SHIP') {
-            // USNS Vanguard downrange perspective
-            cameraRef.current.position.set(280, 20, -420);
-            cameraRef.current.lookAt(mPos.x, mPos.y + 10, mPos.z);
-          } else {
-            // Default FOLLOW camera
-            cameraRef.current.position.set(mPos.x + 28, mPos.y + 12, mPos.z + 45);
-            cameraRef.current.lookAt(mPos.x, mPos.y + 6, mPos.z);
-          }
-        }
-
-        return {
-          ...prev,
-          missionTime: newTime,
-          altitude: alt,
-          velocity: vel,
-          downrange: downrange,
-          stage: stage,
-          fuelPercent: fuel,
-          pitchAngle: pitch,
-          dynamicPressure: dynPress,
-          inertialDrift: drift,
-          starLockStatus: starStatus,
-          bubbleIntegrity: bubbleInt,
-          sinsDeflectionArcsec: currentDeflection,
-          targetMissMeters: missMeters,
-          siloOverpressurePsi: overpressure,
-          targetKillProb: killProb,
-          telemetryStream: stream
-        };
-      });
-
-      rendererRef.current?.render(sceneRef.current!, cameraRef.current!);
+      // Always update 3D visuals and render (both when playing and when paused!)
+      updateSimulationVisuals(simTimeRef.current);
     };
 
     animFrameId.current = requestAnimationFrame(animate);
@@ -989,33 +1034,28 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
     return () => {
       if (animFrameId.current) cancelAnimationFrame(animFrameId.current);
     };
-  }, [isPlaying, simulationSpeed, cameraMode, shockConeVisible, setTelemetry]);
+  }, [isPlaying, simulationSpeed, telemetry.gssEnabled, setTelemetry, updateSimulationVisuals]);
 
   const handleReset = () => {
     soundFx.playClick();
     soundFx.stopRocketRumble();
+    simTimeRef.current = 0;
+    userOrbitRef.current.rotX = 0;
+    userOrbitRef.current.rotY = 0;
+    userOrbitRef.current.distanceFactor = 1.0;
+    setZoomDisplay(100);
+
+    const resetData = calculateTelemetryAtTime(0, telemetry.gssEnabled);
     setTelemetry((prev) => ({
       ...prev,
-      missionTime: 0,
-      altitude: -0.045,
-      velocity: 2.06,
-      downrange: 0,
-      stage: 'PRE_LAUNCH_4KT',
-      fuelPercent: 100,
-      pitchAngle: 90,
-      yawAngle: 0,
-      dynamicPressure: 0,
-      inertialDrift: prev.gssEnabled ? 15 : 120,
-      starLockStatus: 'STANDBY',
-      antennaSignalStrength: 88,
-      carrierLock: true,
-      bubbleIntegrity: 100,
+      ...resetData,
       telemetryStream: [
         'OHIO-CLASS SSBN CRUISING AT 4.0 KNOTS PATROL SPEED - TUBE #4 FLOOD EQUALIZED',
         `BELL GSS REAL-TIME TENSOR UPDATE: ${prev.gssEnabled ? 'ACTIVE (SINS ZERO-BIASED)' : 'BYPASSED (RAW SINS DRIFT)'}`,
         'GAS GENERATOR STEAM EJECTION CHARGE ARMED - SUPERCAVITATING STEAM ENVELOPE READY'
       ]
     }));
+    updateSimulationVisuals(0);
   };
 
   const handleTogglePlay = () => {
@@ -1033,9 +1073,8 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
   const handleToggleGss = () => {
     soundFx.playClick();
     const newGss = !telemetry.gssEnabled;
-    if (newGss) {
-      soundFx.playStellarLock();
-    }
+    if (newGss) soundFx.playStellarLock();
+
     setTelemetry((prev) => ({
       ...prev,
       gssEnabled: newGss,
@@ -1048,66 +1087,222 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
         ...prev.telemetryStream
       ]
     }));
+    updateSimulationVisuals(simTimeRef.current);
   };
 
-  // Jump to specific flight phase for quick inspection
-  const handleJumpToPhase = (timeSec: number) => {
+  // Execute one of the 9 primary launch navigation commands
+  const handleExecuteLaunchCommand = (cmd: LaunchCommand) => {
     soundFx.playClick();
+
+    if (autoCamSync) {
+      setCameraMode(cmd.cameraMode);
+    }
+
+    // Reset user orbit angles for clean cinematic center lock
+    userOrbitRef.current.rotX = 0;
+    userOrbitRef.current.rotY = 0;
+
+    // Play appropriate sound
+    if (cmd.id === '4-KT TUBE' || cmd.id === 'GAS BUBBLE' || cmd.id === 'BROACH') {
+      soundFx.stopRocketRumble();
+    } else if (cmd.id === 'IGNITION') {
+      soundFx.startRocketRumble();
+    } else if (cmd.id === 'PBV ATTITUDE' || cmd.id === 'PLATFORM') {
+      soundFx.stopRocketRumble();
+      soundFx.playStellarLock();
+    } else if (cmd.id === 'MIRV DROP') {
+      soundFx.stopRocketRumble();
+    }
+
+    simTimeRef.current = cmd.timeSec;
+    const cmdData = calculateTelemetryAtTime(cmd.timeSec, telemetry.gssEnabled);
+
     setTelemetry((prev) => ({
       ...prev,
-      missionTime: timeSec
+      ...cmdData,
+      telemetryStream: [
+        `CMD EXEC [${cmd.name}]: JUMP T+${cmd.timeSec.toFixed(1)}s (${cmd.desc})`,
+        ...prev.telemetryStream
+      ]
     }));
+
+    // Instantly update visuals so there is zero delay or black screen
+    updateSimulationVisuals(cmd.timeSec);
+  };
+
+  // Mouse orbit & wheel zoom handlers
+  const handleMouseDown = (e: React.MouseEvent) => {
+    userOrbitRef.current.isDragging = true;
+    userOrbitRef.current.startX = e.clientX;
+    userOrbitRef.current.startY = e.clientY;
+  };
+
+  const handleMouseMove = (e: React.MouseEvent) => {
+    if (!userOrbitRef.current.isDragging) return;
+    const dx = e.clientX - userOrbitRef.current.startX;
+    const dy = e.clientY - userOrbitRef.current.startY;
+    userOrbitRef.current.startX = e.clientX;
+    userOrbitRef.current.startY = e.clientY;
+
+    userOrbitRef.current.rotY -= dx * 0.007;
+    userOrbitRef.current.rotX = Math.max(-Math.PI / 3, Math.min(Math.PI / 3, userOrbitRef.current.rotX + dy * 0.007));
+    updateSimulationVisuals(simTimeRef.current);
+  };
+
+  const handleMouseUp = () => {
+    userOrbitRef.current.isDragging = false;
+  };
+
+  const handleWheel = (e: React.WheelEvent) => {
+    const zoomDelta = e.deltaY * 0.0015;
+    const newFactor = Math.max(0.35, Math.min(2.5, userOrbitRef.current.distanceFactor + zoomDelta));
+    userOrbitRef.current.distanceFactor = newFactor;
+    setZoomDisplay(Math.round(100 / newFactor));
+    updateSimulationVisuals(simTimeRef.current);
+  };
+
+  const handleZoom = (delta: number) => {
+    soundFx.playClick();
+    const newFactor = Math.max(0.35, Math.min(2.5, userOrbitRef.current.distanceFactor - delta));
+    userOrbitRef.current.distanceFactor = newFactor;
+    setZoomDisplay(Math.round(100 / newFactor));
+    updateSimulationVisuals(simTimeRef.current);
+  };
+
+  const handleResetOrbitZoom = () => {
+    soundFx.playClick();
+    userOrbitRef.current.rotX = 0;
+    userOrbitRef.current.rotY = 0;
+    userOrbitRef.current.distanceFactor = 1.0;
+    setZoomDisplay(100);
+    updateSimulationVisuals(simTimeRef.current);
   };
 
   return (
-    <div className="w-full flex flex-col lg:flex-row gap-4 p-4 text-slate-100">
-      {/* 3D Viewport Column */}
-      <div className="flex-1 flex flex-col rounded-lg border border-slate-800 bg-slate-950 overflow-hidden shadow-xl">
+    <div className="w-full flex flex-col lg:flex-row gap-3 md:gap-4 p-2 md:p-4 text-slate-100">
+      {/* LEFT NAVIGATION PANEL with 9 launch commands */}
+      <LaunchCommandNavPanel
+        currentMissionTime={telemetry.missionTime}
+        currentStage={telemetry.stage}
+        onExecuteCommand={handleExecuteLaunchCommand}
+        autoCamEnabled={autoCamSync}
+        onToggleAutoCam={() => setAutoCamSync(!autoCamSync)}
+        isPlaying={isPlaying}
+        onTogglePlay={handleTogglePlay}
+        onResetSim={handleReset}
+      />
+
+      {/* 3D Viewport Column (Enlarged & Centered Trident Animation) */}
+      <div className="flex-1 flex flex-col min-w-0 rounded-lg border border-slate-800 bg-slate-950 overflow-hidden shadow-2xl">
         {/* HUD Viewport Header */}
-        <div className="px-4 py-2.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
-          <div className="flex items-center gap-3">
+        <div className="px-3 md:px-4 py-2.5 bg-slate-900 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs font-mono">
+          <div className="flex items-center gap-2 md:gap-3">
             <span className="flex items-center gap-1.5 text-amber-400 font-bold">
               <Crosshair className="w-4 h-4" />
-              <span>3D DOWNRANGE VECTOR CAM</span>
+              <span className="hidden sm:inline">3D DOWNRANGE VECTOR CAM</span>
+              <span className="sm:hidden">3D VECTOR</span>
             </span>
             <span className="text-slate-500">|</span>
-            <span className="text-slate-300">
+            <span className="text-slate-300 hidden md:inline">
               TARGET: <strong className="text-white">UGM-133A TRIDENT II (D5)</strong>
             </span>
           </div>
 
-          {/* Camera View Switcher */}
-          <div className="flex items-center gap-1.5">
-            <span className="text-slate-400 text-[11px]">CAM:</span>
-            {[
-              { id: 'FOLLOW', label: 'FOLLOW' },
-              { id: 'SUB_4KT', label: '4-KT SUB' },
-              { id: 'BUBBLE_CAM', label: 'STEAM BUBBLE' },
-              { id: 'PLATFORM_BUS', label: 'MIRV BUS' },
-              { id: 'TARGET_SILO', label: 'TARGET SILO' },
-              { id: 'SHIP', label: 'VANGUARD' }
-            ].map((cam) => (
+          <div className="flex items-center gap-2">
+            {/* Zoom Controls */}
+            <div className="flex items-center gap-1 bg-slate-800/80 px-1.5 py-0.5 rounded border border-slate-700 text-[10px]">
               <button
-                key={cam.id}
-                onClick={() => {
-                  soundFx.playClick();
-                  setCameraMode(cam.id as any);
-                }}
-                className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors ${
-                  cameraMode === cam.id
-                    ? 'bg-amber-500/20 border border-amber-500 text-amber-300'
-                    : 'bg-slate-800 text-slate-400 hover:text-slate-200'
-                }`}
+                onClick={() => handleZoom(-0.2)}
+                className="p-1 hover:text-amber-400 text-slate-300 cursor-pointer"
+                title="Zoom In"
               >
-                {cam.label}
+                <ZoomIn className="w-3.5 h-3.5" />
               </button>
-            ))}
+              <button
+                onClick={handleResetOrbitZoom}
+                className="px-1 font-bold text-slate-300 hover:text-white cursor-pointer"
+                title="Reset Camera Zoom & Angle"
+              >
+                {zoomDisplay}%
+              </button>
+              <button
+                onClick={() => handleZoom(0.2)}
+                className="p-1 hover:text-amber-400 text-slate-300 cursor-pointer"
+                title="Zoom Out"
+              >
+                <ZoomOut className="w-3.5 h-3.5" />
+              </button>
+            </div>
+
+            {/* Theater Mode Toggle */}
+            <button
+              onClick={() => {
+                soundFx.playClick();
+                setIsTheaterMode(!isTheaterMode);
+              }}
+              className={`flex items-center gap-1 px-2 py-1 rounded text-[10px] font-bold border transition-colors cursor-pointer ${
+                isTheaterMode
+                  ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                  : 'bg-slate-800 border-slate-700 text-slate-300 hover:text-white'
+              }`}
+              title={isTheaterMode ? 'Restore side metrics panel' : 'Maximize 3D viewport across full screen width'}
+            >
+              {isTheaterMode ? <Minimize2 className="w-3.5 h-3.5" /> : <Maximize2 className="w-3.5 h-3.5" />}
+              <span className="hidden sm:inline">{isTheaterMode ? 'COLLAPSE' : 'EXPAND VIEW'}</span>
+            </button>
+
+            {/* Camera View Switcher */}
+            <div className="flex items-center gap-1">
+              <span className="text-slate-400 text-[11px] hidden xl:inline">CAM:</span>
+              {[
+                { id: 'FOLLOW', label: 'FOLLOW' },
+                { id: 'SUB_4KT', label: '4-KT SUB' },
+                { id: 'BUBBLE_CAM', label: 'BUBBLE' },
+                { id: 'PLATFORM_BUS', label: 'MIRV BUS' },
+                { id: 'TARGET_SILO', label: 'SILO' },
+                { id: 'SHIP', label: 'VANGUARD' }
+              ].map((cam) => (
+                <button
+                  key={cam.id}
+                  onClick={() => {
+                    soundFx.playClick();
+                    setCameraMode(cam.id as any);
+                    updateSimulationVisuals(simTimeRef.current);
+                  }}
+                  className={`px-1.5 md:px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer transition-colors ${
+                    cameraMode === cam.id
+                      ? 'bg-amber-500/20 border border-amber-500 text-amber-300'
+                      : 'bg-slate-800 text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {cam.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        {/* 3D Canvas Container */}
-        <div className="relative w-full h-[470px] md:h-[550px] bg-black">
-          <div ref={containerRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
+        {/* 3D Canvas Container (Large & Centered) */}
+        <div 
+          className={`relative w-full ${
+            isTheaterMode 
+              ? 'h-[680px] lg:h-[780px] xl:h-[840px]' 
+              : 'h-[520px] lg:h-[600px] xl:h-[650px]'
+          } bg-black select-none cursor-grab active:cursor-grabbing overflow-hidden`}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleMouseUp}
+          onWheel={handleWheel}
+        >
+          <div ref={containerRef} className="w-full h-full" />
+
+          {/* Interactive Navigation Hint Pill */}
+          <div className="absolute top-4 right-4 pointer-events-none hidden sm:flex items-center gap-2 px-2.5 py-1 rounded bg-slate-950/80 border border-slate-800 text-[10px] font-mono text-slate-400 backdrop-blur shadow">
+            <span>DRAG TO ORBIT</span>
+            <span className="text-slate-600">•</span>
+            <span>WHEEL TO ZOOM</span>
+          </div>
 
           {/* Flight Phase Badge */}
           <div className="absolute top-4 left-4 pointer-events-none flex flex-col gap-2 font-mono">
@@ -1125,7 +1320,7 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
                   <span>4-KNOT RUN &amp; GAS BUBBLE ENVELOPE</span>
                 </div>
                 <p className="text-[10px] text-slate-300 leading-tight">
-                  SSBN moving at <strong>4.0 knots</strong>. High-pressure steam bubble encapsulates missile to prevent transverse hydrodynamic shear before surface broach.
+                  SSBN cruising at <strong>4.0 knots</strong>. High-pressure steam bubble encapsulates missile to prevent transverse hydrodynamic shear before surface broach.
                 </p>
               </div>
             )}
@@ -1162,87 +1357,36 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
                   {telemetry.gssEnabled ? <CheckCircle2 className="w-4 h-4 text-emerald-400" /> : <AlertTriangle className="w-4 h-4 text-rose-400" />}
                   <span>{telemetry.gssEnabled ? 'WITH GSS: SILO CRUSHED' : 'WITHOUT GSS: SILO SURVIVES'}</span>
                 </div>
-                <div className="text-[10px] space-y-0.5">
-                  <div>MISS DISTANCE: <strong>±{telemetry.targetMissMeters}M</strong></div>
-                  <div>BLAST OVERPRESSURE: <strong>{telemetry.siloOverpressurePsi} PSI</strong> (Req: 2,000 psi)</div>
-                  <div>KILL PROBABILITY: <strong>{telemetry.targetKillProb}%</strong></div>
-                </div>
+                <p className="text-[10px] text-slate-300 leading-tight">
+                  {telemetry.gssEnabled 
+                    ? 'Target CEP 38m, overpressure 2,850 PSI crushes hardened launch silo.' 
+                    : 'Uncompensated vertical bias causes 1,420m CEP miss; silo survives.'}
+                </p>
               </div>
             )}
           </div>
 
-          {/* Shock Cone Drag Callout */}
-          {(telemetry.stage === 'AEROSPIKE' || telemetry.stage === 'STAGE_1') && (
-            <div className="absolute top-4 right-4 pointer-events-none font-mono text-[11px] bg-slate-900/90 border border-sky-500/50 px-3 py-2 rounded text-sky-200 backdrop-blur max-w-[210px]">
-              <div className="font-bold flex items-center gap-1.5 text-sky-400 mb-1">
-                <Flame className="w-3.5 h-3.5" />
-                <span>AEROSPIKE DETACHED SHOCK</span>
-              </div>
-              <p className="text-[10px] text-slate-300 leading-tight">
-                Forward disc breaks air barrier, reducing frontal aerodynamic drag by <strong className="text-white">~50%</strong>.
-              </p>
-            </div>
-          )}
-
-          {/* Synthetic Vision Artificial Horizon HUD Overlay */}
-          <div className="absolute bottom-20 right-4 w-32 h-32 rounded-full border border-slate-500 bg-slate-900/50 overflow-hidden backdrop-blur-md flex items-center justify-center shadow-lg pointer-events-none">
-            {/* Pitch Ladder (Moving Background) */}
+          {/* Pitch Angle Indicator (Attitude Director Indicator HUD) */}
+          <div className="absolute bottom-16 right-4 pointer-events-none w-24 h-24 rounded-full border border-emerald-500/40 bg-slate-950/80 backdrop-blur overflow-hidden flex items-center justify-center">
             <div 
-              className="absolute w-64 h-64 flex flex-col transition-transform duration-75"
-              style={{ 
-                transform: `rotate(${-telemetry.yawAngle}deg) translateY(${(telemetry.pitchAngle - 90) * 1.5}px)`
+              className="absolute inset-0 transition-transform duration-100 ease-out"
+              style={{
+                transform: `rotate(${90 - telemetry.pitchAngle}deg)`,
+                transformOrigin: 'center center'
               }}
             >
-              {/* Sky (Upper half, positive pitch > 0 means nose up -> see sky) */}
-              <div className="w-full h-1/2 bg-sky-500/30 border-b border-emerald-400 flex flex-col items-center justify-end pb-1 text-[8px] text-emerald-300 gap-4">
-                <div className="w-16 border-b border-emerald-400/50 text-center">60</div>
-                <div className="w-24 border-b border-emerald-400/50 text-center">30</div>
-              </div>
-              {/* Ground (Lower half) */}
-              <div className="w-full h-1/2 bg-amber-800/30 flex flex-col items-center justify-start pt-1 text-[8px] text-amber-500/80 gap-4">
-                <div className="w-24 border-b border-amber-600/50 text-center -mt-2">-30</div>
-                <div className="w-16 border-b border-amber-600/50 text-center">-60</div>
-              </div>
+              <div className="w-full h-1/2 bg-sky-900/40 border-b border-emerald-400"></div>
+              <div className="w-full h-1/2 bg-amber-950/40"></div>
+              <div className="absolute top-1/2 left-0 right-0 h-0.5 bg-emerald-400 -translate-y-1/2"></div>
             </div>
-            
-            {/* Fixed Reticle / Crosshair */}
-            <div className="absolute w-14 h-px bg-emerald-400">
-              <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2" />
-            </div>
-            <div className="absolute w-3 h-3 border-t-2 border-l-2 border-emerald-400 rounded-tl -translate-x-6"></div>
-            <div className="absolute w-3 h-3 border-t-2 border-r-2 border-emerald-400 rounded-tr translate-x-6"></div>
+
+            <div className="relative z-10 w-8 h-2 border-l-2 border-r-2 border-b-2 border-emerald-400"></div>
 
             <div className="absolute top-3 left-1/2 -translate-x-1/2 text-[9px] font-mono text-emerald-400 font-bold drop-shadow-md">
               P: {telemetry.pitchAngle.toFixed(1)}°
             </div>
             <div className="absolute bottom-3 left-1/2 -translate-x-1/2 text-[9px] font-mono text-emerald-400 font-bold drop-shadow-md">
               ADI HUD
-            </div>
-          </div>
-
-          {/* Quick Trajectory Phase Scrubber at bottom */}
-          <div className="absolute top-4 right-4 hidden md:flex flex-col gap-1 items-end font-mono text-[10px]">
-            <span className="text-slate-400 font-bold">FLIGHT TIMELINE SCRUB:</span>
-            <div className="flex flex-wrap gap-1 max-w-[280px] justify-end">
-              {[
-                { time: 0, label: '4-KT TUBE' },
-                { time: 3.5, label: 'GAS BUBBLE' },
-                { time: 6.0, label: 'BROACH' },
-                { time: 7.2, label: 'IGNITION' },
-                { time: 62, label: 'PBV ATTITUDE' },
-                { time: 74, label: 'PLATFORM' },
-                { time: 84, label: 'MIRV DROP' },
-                { time: 98, label: 'REENTRY' },
-                { time: 110, label: 'IMPACT' }
-              ].map((ph) => (
-                <button
-                  key={ph.label}
-                  onClick={() => handleJumpToPhase(ph.time)}
-                  className="px-1.5 py-0.5 rounded bg-slate-900/80 hover:bg-slate-800 border border-slate-750 text-slate-300 cursor-pointer"
-                >
-                  {ph.label}
-                </button>
-              ))}
             </div>
           </div>
 
@@ -1294,7 +1438,7 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
                     : 'bg-rose-950 border-rose-500 text-rose-300'
                 }`}
               >
-                <Compass className="w-3.5 h-3.5" />
+                <Sparkles className="w-3.5 h-3.5" />
                 <span>GSS-SINS UPDATE: {telemetry.gssEnabled ? 'ACTIVE (0.08")' : 'BYPASSED (24.5")'}</span>
               </button>
 
@@ -1323,167 +1467,158 @@ export const ThreeFlightSimulator: React.FC<ThreeFlightSimulatorProps> = ({
       </div>
 
       {/* Flight Control & GSS MIRV Effectiveness Column */}
-      <div className="w-full lg:w-96 flex flex-col gap-4">
-        {/* GSS Impact on MIRV Target Effectiveness Card */}
-        <div className="p-4 rounded-lg border border-slate-800 bg-slate-950 font-mono shadow-md">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
-            <span className="text-xs font-bold text-pink-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Target className="w-4 h-4" />
-              GSS SINS &amp; MIRV TARGET KILL
-            </span>
-            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-              telemetry.gssEnabled ? 'bg-emerald-950 text-emerald-400 border border-emerald-800' : 'bg-rose-950 text-rose-400 border border-rose-800'
-            }`}>
-              {telemetry.gssEnabled ? 'CALIBRATED' : 'UNCOMPENSATED'}
-            </span>
+      {!isTheaterMode && (
+        <div className="w-full lg:w-80 xl:w-96 shrink-0 flex flex-col gap-4">
+          {/* GSS Impact on MIRV Target Effectiveness Card */}
+          <div className="p-4 rounded-lg border border-slate-800 bg-slate-950 font-mono shadow-md">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+              <span className="text-xs font-bold text-pink-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Target className="w-4 h-4" />
+                GSS SINS &amp; MIRV TARGET KILL
+              </span>
+              <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                telemetry.gssEnabled ? 'bg-emerald-950 border border-emerald-500 text-emerald-400' : 'bg-rose-950 border border-rose-500 text-rose-400'
+              }`}>
+                {telemetry.gssEnabled ? 'SINS CALIBRATED' : 'RAW SINS DRIFT'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 text-xs mb-3">
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">DEFLECTION OF VERTICAL</div>
+                <div className={`text-base font-bold ${telemetry.gssEnabled ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {telemetry.sinsDeflectionArcsec.toFixed(2)}&quot;
+                </div>
+                <div className="text-[9px] text-slate-500">
+                  {telemetry.gssEnabled ? 'Bell GSS tensor compensated' : 'Uncorrected gravity bias'}
+                </div>
+              </div>
+
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">TARGET MISS (CEP)</div>
+                <div className={`text-base font-bold ${telemetry.gssEnabled ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {telemetry.targetMissMeters} M
+                </div>
+                <div className="text-[9px] text-slate-500">
+                  {telemetry.gssEnabled ? 'Hard Target Kill threshold' : 'Exceeds lethal radius'}
+                </div>
+              </div>
+
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">SILO OVERPRESSURE</div>
+                <div className={`text-base font-bold ${telemetry.gssEnabled ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {telemetry.siloOverpressurePsi} PSI
+                </div>
+                <div className="text-[9px] text-slate-500">Threshold: 2,000 PSI</div>
+              </div>
+
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">SILO DESTRUCTION (Pk)</div>
+                <div className={`text-base font-bold ${telemetry.gssEnabled ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {telemetry.targetKillProb}%
+                </div>
+                <div className="text-[9px] text-slate-500">
+                  {telemetry.gssEnabled ? 'SILO CRUSHED' : 'Hardened ICBM Silo'}
+                </div>
+              </div>
+            </div>
+
+            <button
+              onClick={handleToggleGss}
+              className={`w-full py-2 px-3 rounded text-xs font-bold border transition-colors flex items-center justify-center gap-2 cursor-pointer ${
+                telemetry.gssEnabled
+                  ? 'bg-pink-950/40 border-pink-500 text-pink-300 hover:bg-pink-900/40'
+                  : 'bg-slate-900 border-slate-700 text-slate-300 hover:bg-slate-800'
+              }`}
+            >
+              <Sparkles className="w-3.5 h-3.5 text-pink-400" />
+              <span>TOGGLE GSS MAP-MATCHING INJECTION</span>
+            </button>
           </div>
 
-          {/* Kill Probability Gauge */}
-          <div className="mb-3 p-2.5 rounded bg-slate-900/90 border border-slate-850">
-            <div className="flex justify-between items-center text-xs mb-1">
-              <span className="text-slate-400">HARD SILO KILL PROBABILITY (Pk):</span>
-              <strong className={`text-base ${telemetry.targetKillProb > 90 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {telemetry.targetKillProb}%
-              </strong>
-            </div>
-            <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
-              <div 
-                className={`h-full transition-all duration-300 ${
-                  telemetry.targetKillProb > 90 ? 'bg-emerald-500' : 'bg-rose-500'
-                }`}
-                style={{ width: `${telemetry.targetKillProb}%` }}
-              />
-            </div>
-          </div>
-
-          {/* GSS Comparison Grid */}
-          <div className="grid grid-cols-2 gap-2 text-xs mb-3">
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <span className="text-[10px] text-slate-400">VERTICAL DEFLECTION (ξ)</span>
-              <div className={`font-bold text-sm ${telemetry.gssEnabled ? 'text-emerald-300' : 'text-rose-400'}`}>
-                {telemetry.sinsDeflectionArcsec.toFixed(2)}&quot;
-              </div>
-              <div className="text-[9px] text-slate-500">
-                {telemetry.gssEnabled ? 'Zero-biased' : 'Raw seamount pull'}
-              </div>
+          {/* Flight Dynamics Telemetry Metrics */}
+          <div className="p-4 rounded-lg border border-slate-800 bg-slate-950 font-mono shadow-md">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
+              <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
+                <Crosshair className="w-4 h-4" />
+                FLIGHT DYNAMICS METRICS
+              </span>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-300">
+                MK 6 GUIDANCE
+              </span>
             </div>
 
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <span className="text-[10px] text-slate-400">TERMINAL MISS (CEP)</span>
-              <div className={`font-bold text-sm ${telemetry.targetMissMeters < 50 ? 'text-emerald-300' : 'text-rose-400'}`}>
-                ±{telemetry.targetMissMeters} M
+            <div className="grid grid-cols-2 gap-3 text-xs mb-3">
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">ALTITUDE</div>
+                <div className="text-base font-bold text-white">
+                  {telemetry.altitude < 0 
+                    ? `${(telemetry.altitude * 1000).toFixed(0)} M (SUB)` 
+                    : `${telemetry.altitude.toFixed(2)} KM`}
+                </div>
               </div>
-              <div className="text-[9px] text-slate-500">
-                {telemetry.targetMissMeters < 50 ? 'Direct crater hit' : 'Misses reinforced door'}
+
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">VELOCITY</div>
+                <div className="text-base font-bold text-amber-400">
+                  {telemetry.velocity.toFixed(0)} M/S
+                </div>
+                <div className="text-[10px] text-slate-500">
+                  MACH {(telemetry.velocity / 340).toFixed(1)}
+                </div>
               </div>
-            </div>
 
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <span className="text-[10px] text-slate-400">SILO OVERPRESSURE</span>
-              <div className={`font-bold text-sm ${telemetry.siloOverpressurePsi > 2000 ? 'text-emerald-300' : 'text-rose-400'}`}>
-                {telemetry.siloOverpressurePsi} PSI
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">DOWNRANGE</div>
+                <div className="text-base font-bold text-white">
+                  {telemetry.downrange.toFixed(0)} KM
+                </div>
+                <div className="text-[10px] text-slate-500">
+                  {(telemetry.downrange * 0.54).toFixed(0)} NM
+                </div>
               </div>
-              <div className="text-[9px] text-slate-500">Threshold: 2,000 PSI</div>
-            </div>
 
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <span className="text-[10px] text-slate-400">TARGET SILO STATUS</span>
-              <div className={`font-bold text-[11px] mt-0.5 ${telemetry.gssEnabled ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {telemetry.gssEnabled ? 'SILO CRUSHED' : 'OPERATIONAL'}
-              </div>
-              <div className="text-[9px] text-slate-500">Hardened ICBM Silo</div>
-            </div>
-          </div>
-
-          <button
-            onClick={handleToggleGss}
-            className="w-full py-2 bg-slate-900 hover:bg-slate-800 border border-slate-750 rounded text-xs text-slate-200 font-bold transition-colors cursor-pointer flex items-center justify-center gap-2"
-          >
-            <Compass className="w-3.5 h-3.5 text-pink-400" />
-            <span>TOGGLE GSS MAP-MATCHING INJECTION</span>
-          </button>
-        </div>
-
-        {/* Core Flight Metrics */}
-        <div className="p-4 rounded-lg border border-slate-800 bg-slate-950 font-mono shadow-md">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-2 mb-3">
-            <span className="text-xs font-bold text-amber-400 uppercase tracking-wider flex items-center gap-1.5">
-              <Activity className="w-4 h-4" />
-              FLIGHT DYNAMICS METRICS
-            </span>
-            <span className="text-[10px] text-slate-400 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
-              MK 6 GUIDANCE
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3 text-xs mb-3">
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <div className="text-slate-400 text-[10px]">ALTITUDE</div>
-              <div className="text-sm font-bold text-white">
-                {telemetry.altitude.toFixed(2)} <span className="text-[10px] text-slate-400">KM</span>
+              <div className="bg-slate-900/70 p-2 rounded border border-slate-800">
+                <div className="text-[10px] text-slate-400">SUB PATROL SPEED</div>
+                <div className="text-base font-bold text-sky-400">
+                  4.0 KNOTS
+                </div>
+                <div className="text-[10px] text-slate-500">
+                  Submerged Cruise
+                </div>
               </div>
             </div>
 
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <div className="text-slate-400 text-[10px]">VELOCITY</div>
-              <div className="text-sm font-bold text-cyan-400">
-                {telemetry.velocity.toFixed(0)} <span className="text-[10px] text-slate-400">M/S</span>
-              </div>
-              <div className="text-[9px] text-slate-500">
-                MACH {(telemetry.velocity / 343).toFixed(1)}
-              </div>
-            </div>
-
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <div className="text-slate-400 text-[10px]">DOWNRANGE</div>
-              <div className="text-sm font-bold text-emerald-400">
-                {telemetry.downrange.toFixed(0)} <span className="text-[10px] text-slate-400">KM</span>
-              </div>
-              <div className="text-[9px] text-slate-500">
-                {(telemetry.downrange * 0.539957).toFixed(0)} NM
-              </div>
-            </div>
-
-            <div className="bg-slate-900/80 p-2 rounded border border-slate-850">
-              <div className="text-slate-400 text-[10px]">SUB PATROL SPEED</div>
-              <div className="text-sm font-bold text-amber-300">
-                4.0 <span className="text-[10px] text-slate-400">KNOTS</span>
-              </div>
-              <div className="text-[9px] text-slate-500">Submerged Cruise</div>
-            </div>
-          </div>
-
-          {/* Propellant remaining */}
-          <div>
-            <div className="flex justify-between text-[11px] mb-1">
+            {/* Fuel Remaining Bar */}
+            <div className="flex items-center justify-between text-[11px] mb-1">
               <span className="text-slate-400">NEPE-75 PROPELLANT</span>
               <span className="font-bold text-amber-400">{telemetry.fuelPercent.toFixed(0)}%</span>
             </div>
             <div className="w-full h-2 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
-              <div 
+              <div
                 className="h-full bg-gradient-to-r from-amber-500 to-red-500 transition-all duration-200"
                 style={{ width: `${Math.max(0, telemetry.fuelPercent)}%` }}
               />
             </div>
           </div>
-        </div>
 
-        {/* Historical Teletype Printer */}
-        <div className="p-4 rounded-lg border border-slate-800 bg-slate-950 font-mono flex-1 shadow-md flex flex-col">
-          <div className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 border-b border-slate-800 pb-1.5 flex items-center justify-between">
-            <span>FBM GUIDANCE BUS FEED</span>
-            <span className="text-[10px] text-emerald-400">CH-2287</span>
-          </div>
+          {/* Historical Teletype Printer */}
+          <div className="p-4 rounded-lg border border-slate-800 bg-slate-950 font-mono flex-1 shadow-md flex flex-col">
+            <div className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2 border-b border-slate-800 pb-1.5 flex items-center justify-between">
+              <span>FBM GUIDANCE BUS FEED</span>
+              <span className="text-[10px] text-emerald-400">CH-2287</span>
+            </div>
 
-          <div className="flex-1 flex flex-col gap-1.5 overflow-y-auto max-h-40 text-[11px] text-slate-300 scrollbar-thin scrollbar-thumb-slate-800">
-            {telemetry.telemetryStream.map((log, idx) => (
-              <div key={idx} className="p-1.5 rounded bg-slate-900/60 border border-slate-850 leading-tight">
-                {log}
-              </div>
-            ))}
+            <div className="flex-1 flex flex-col gap-1.5 overflow-y-auto max-h-40 text-[11px] text-slate-300 scrollbar-thin scrollbar-thumb-slate-800">
+              {telemetry.telemetryStream.map((log, idx) => (
+                <div key={idx} className="p-1.5 rounded bg-slate-900/60 border border-slate-850 leading-tight">
+                  {log}
+                </div>
+              ))}
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };
