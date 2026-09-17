@@ -39,11 +39,48 @@ export interface TelemetryData {
   // GSS & SINS Calibration state
   gssEnabled: boolean;
   subSpeedKnots: number; // 4.0 knots standard launch patrol speed
+  subDepthMeters: number; // current depth in meters (0 = surface, 22 = patrol launch, 60+ = deep)
+  subSurfaceMode: boolean; // true if surfaced at 0m waterline
   bubbleIntegrity: number; // 100% inside water column -> 0% at broach
   sinsDeflectionArcsec: number; // 0.08 with GSS vs 24.5 without GSS
   targetMissMeters: number; // terminal downrange miss
   siloOverpressurePsi: number; // overpressure at target silo
   targetKillProb: number; // P_k probability of hard target kill
+
+  // Submarine Evasion & Tactical Systems
+  noodlingPattern: 'OFF' | 'SERPENTINE' | 'BAFFLE_CLEAR' | 'THERMAL_DIVE';
+  superSilentMode: boolean;
+  countermeasuresRemaining: number;
+  countermeasuresActive: boolean;
+  russianSubContact: {
+    name: string;
+    bearing: number;
+    distanceYards: number;
+    depthMeters: number;
+    trackingStatus: 'LOCKED' | 'SEARCHING' | 'BAFFLED' | 'SPOOFED_BY_DECOY';
+    tmaConfidence: number; // 0 to 100%
+    activePingCooldown: number;
+  };
+  subRadiatedNoiseDb: number;
+}
+
+export interface SelectableObjectIntel {
+  id: string;
+  name: string;
+  designation: string;
+  category: 'MISSILE' | 'SUBMARINE' | 'SATELLITE' | 'PLANET' | 'COUNTERMEASURE' | 'GROUND_TARGET' | 'VESSEL';
+  affiliation: string;
+  status: string;
+  position: { x: number; y: number; z: number };
+  telemetrySummary: {
+    altitudeOrDepth: string;
+    speedOrVelocity: string;
+    rangeOrDistance?: string;
+    bearingOrAzimuth?: string;
+    coordinatesOrOrbit?: string;
+  };
+  specifications: Array<{ label: string; value: string }>;
+  description: string;
 }
 
 export interface ShipSensor {

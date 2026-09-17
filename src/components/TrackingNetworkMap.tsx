@@ -186,6 +186,7 @@ export const TrackingNetworkMap: React.FC = () => {
     const landMat = new THREE.MeshBasicMaterial({ color: 0x10b981 }); // Emerald
 
     ASSETS.forEach(asset => {
+      if (!asset || typeof asset.lat !== 'number' || typeof asset.lon !== 'number') return;
       const pos = latLonToVector3(asset.lat, asset.lon, 10.05);
       const marker = new THREE.Mesh(markerGeo, asset.type === 'SHIP' ? shipMat : landMat);
       marker.position.copy(pos);
@@ -264,7 +265,7 @@ export const TrackingNetworkMap: React.FC = () => {
 
   // Update target camera position when asset is selected
   useEffect(() => {
-    if (selectedAsset && earthGroupRef.current) {
+    if (selectedAsset && typeof selectedAsset.lat === 'number' && earthGroupRef.current) {
       soundFx.playClick();
       
       // Calculate global position of the asset accounting for current earth rotation
@@ -316,8 +317,8 @@ export const TrackingNetworkMap: React.FC = () => {
                 </span>
               </div>
               <div className="text-[10px] text-slate-500 font-mono">
-                LAT: {asset.lat > 0 ? `${asset.lat.toFixed(2)}°N` : `${Math.abs(asset.lat).toFixed(2)}°S`} | 
-                LON: {asset.lon > 0 ? `${asset.lon.toFixed(2)}°E` : `${Math.abs(asset.lon).toFixed(2)}°W`}
+                LAT: {(asset.lat ?? 0) > 0 ? `${(asset.lat ?? 0).toFixed(2)}°N` : `${Math.abs(asset.lat ?? 0).toFixed(2)}°S`} | 
+                LON: {(asset.lon ?? 0) > 0 ? `${(asset.lon ?? 0).toFixed(2)}°E` : `${Math.abs(asset.lon ?? 0).toFixed(2)}°W`}
               </div>
             </button>
           ))}
@@ -362,8 +363,8 @@ export const TrackingNetworkMap: React.FC = () => {
             <div className="bg-slate-900/60 p-3 rounded border border-slate-850">
               <span className="text-[10px] text-slate-400 font-mono block mb-1">COORDINATES</span>
               <div className="font-mono text-xs text-slate-200">
-                {selectedAsset.lat > 0 ? `${selectedAsset.lat.toFixed(4)}° N` : `${Math.abs(selectedAsset.lat).toFixed(4)}° S`}, {' '}
-                {selectedAsset.lon > 0 ? `${selectedAsset.lon.toFixed(4)}° E` : `${Math.abs(selectedAsset.lon).toFixed(4)}° W`}
+                {(selectedAsset.lat ?? 0) > 0 ? `${(selectedAsset.lat ?? 0).toFixed(4)}° N` : `${Math.abs(selectedAsset.lat ?? 0).toFixed(4)}° S`}, {' '}
+                {(selectedAsset.lon ?? 0) > 0 ? `${(selectedAsset.lon ?? 0).toFixed(4)}° E` : `${Math.abs(selectedAsset.lon ?? 0).toFixed(4)}° W`}
               </div>
             </div>
 

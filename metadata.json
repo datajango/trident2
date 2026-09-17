@@ -1,6 +1,6 @@
 {
   "name": "USNS Vanguard Downrange Telemetry & Guidance Simulator",
-  "description": "Simulation and technical operations console for USNS Vanguard (T-AGM-19), Apollo orbital tracking, and Trident II stellar-inertial ballistic missile guidance.",
+  "description": "Multi-POC simulation suite and data-driven 3D engine featuring USNS Vanguard ballistic missile telemetry, Cyberpunk vector world map, Command Mode mission queuing, operating vitals, and tactical decision trees.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }
